@@ -1,5 +1,11 @@
 # SM-P205 / wisdom Linux 4.4.302 Bring-up
 
+> Android 17 migration note (2026-08-07): the current repository is
+> `Project-Wisdom/android_kernel_samsung_wisdom`, the source path is
+> `kernel/samsung/wisdom`, and the development branch is `android-17`.
+> References to universal7904 paths and LineageOS 23.2 branches below document
+> the historical 4.4.302 bring-up and are intentionally retained.
+
 ## 1. 目标
 
 在保留可回退的 LineageOS 23.2 / wisdom 4.4.177 全量包与 boot 备份的前提下：
@@ -669,7 +675,7 @@ sha256sum \
 - Linux stable：<https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git>
 - Linux v4.x 发布目录：<https://www.kernel.org/pub/linux/kernel/v4.x/>
 - 当前 wisdom kernel：
-  <https://github.com/xuanyayi/android_kernel_samsung_universal7904>
+  <https://github.com/Project-Wisdom/android_kernel_samsung_wisdom>
 - 同源 universal7904 4.4.302：
   <https://github.com/SamarV-121/android_kernel_samsung_universal7904>
 - Google Android 4.4 common：

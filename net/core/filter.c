@@ -2798,6 +2798,9 @@ xdp_func_proto(enum bpf_func_id func_id)
 		return &bpf_xdp_event_output_proto;
 	case BPF_FUNC_get_smp_processor_id:
 		return &bpf_get_smp_processor_id_proto;
+	case BPF_FUNC_get_socket_cookie:
+	case BPF_FUNC_get_socket_uid:
+		return NULL;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -3327,6 +3330,8 @@ cg_sock_func_proto(enum bpf_func_id func_id)
 	switch (func_id) {
 	case BPF_FUNC_get_socket_cookie:
 		return &bpf_get_socket_cookie_sock_proto;
+	case BPF_FUNC_get_socket_uid:
+		return NULL;
 	case BPF_FUNC_sk_storage_get:
 		return &bpf_sk_storage_get_cg_sock_proto;
 	default:
@@ -3338,6 +3343,9 @@ static const struct bpf_func_proto *
 cg_sock_addr_func_proto(enum bpf_func_id func_id)
 {
 	switch (func_id) {
+	case BPF_FUNC_get_socket_cookie:
+	case BPF_FUNC_get_socket_uid:
+		return NULL;
 	case BPF_FUNC_sk_storage_get:
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:
@@ -3351,6 +3359,9 @@ static const struct bpf_func_proto *
 cg_sockopt_func_proto(enum bpf_func_id func_id)
 {
 	switch (func_id) {
+	case BPF_FUNC_get_socket_cookie:
+	case BPF_FUNC_get_socket_uid:
+		return NULL;
 	case BPF_FUNC_sk_storage_get:
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:

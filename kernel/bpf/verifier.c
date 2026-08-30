@@ -1248,11 +1248,11 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			goto err_type;
 	} else if (arg_type == ARG_PTR_TO_SOCK_COMMON) {
 		expected_type = PTR_TO_SOCK_COMMON;
-		if (!type_is_sk_pointer(type))
+		if (type != PTR_TO_SOCK_COMMON && type != PTR_TO_SOCKET)
 			goto err_type;
 	} else if (arg_type == ARG_PTR_TO_SOCKET) {
 		expected_type = PTR_TO_SOCKET;
-		if (type != expected_type && type != PTR_TO_CTX)
+		if (type != expected_type)
 			goto err_type;
 	} else if (arg_type == ARG_PTR_TO_MEM ||
 		   arg_type == ARG_PTR_TO_UNINIT_MEM) {
@@ -1309,7 +1309,9 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			err = check_stack_boundary(env, regno,
 						   meta->map_ptr->key_size,
 						   false, NULL);
-	} else if (arg_type == ARG_PTR_TO_MAP_VALUE) {
+	} else if (arg_type == ARG_PTR_TO_MAP_VALUE ||
+		   (arg_type == ARG_PTR_TO_MAP_VALUE_OR_NULL &&
+		    !(type == CONST_IMM && reg->imm == 0))) {
 		/* bpf_map_xxx(..., map_ptr, ..., value) call:
 		 * check [value, value + map->value_size) validity
 		 */

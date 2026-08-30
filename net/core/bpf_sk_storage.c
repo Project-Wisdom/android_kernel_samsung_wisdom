@@ -282,10 +282,13 @@ sk_storage_lookup(struct sock *sk, struct bpf_map *map, bool cacheit_lockit)
 static int check_flags(const struct bpf_sk_storage_data *old_sdata,
 		       u64 map_flags)
 {
-	if (old_sdata && (map_flags & (BPF_NOEXIST | BPF_EXIST)) == BPF_NOEXIST)
+	if (map_flags & ~(BPF_NOEXIST | BPF_EXIST))
+		return -EINVAL;
+
+	if (old_sdata && (map_flags & BPF_NOEXIST))
 		return -EEXIST;
 
-	if (!old_sdata && (map_flags & (BPF_NOEXIST | BPF_EXIST)) == BPF_EXIST)
+	if (!old_sdata && (map_flags & BPF_EXIST))
 		return -ENOENT;
 
 	return 0;
@@ -568,6 +571,9 @@ static int bpf_fd_sk_storage_update_elem(struct bpf_map *map, void *key,
 	struct socket *sock;
 	int fd, err;
 
+	if (map_flags & ~(BPF_NOEXIST | BPF_EXIST))
+		return -EINVAL;
+
 	fd = *(int *)key;
 	sock = sockfd_lookup(fd, &err);
 	if (sock) {
@@ -602,12 +608,17 @@ static int bpf_sk_storage_map_check_btf(const struct bpf_map *map,
 {
 	const struct btf_type *key_type, *val_type;
 	u32 key_size = 0, val_size = 0;
+	u32 int_data;
 
 	key_type = btf_type_id_size(btf, &key_type_id, &key_size);
 	if (!key_type || key_size != sizeof(int))
 		return -EINVAL;
 
 	if (BTF_INFO_KIND(key_type->info) != BTF_KIND_INT)
+		return -EINVAL;
+
+	int_data = *(u32 *)(key_type + 1);
+	if (BTF_INT_BITS(int_data) != 32 || BTF_INT_OFFSET(int_data))
 		return -EINVAL;
 
 	val_type = btf_type_id_size(btf, &value_type_id, &val_size);
@@ -622,7 +633,7 @@ BPF_CALL_4(bpf_sk_storage_get, struct bpf_map *, map, struct sock *, sk,
 {
 	struct bpf_sk_storage_data *sdata;
 
-	if (flags > BPF_SK_STORAGE_GET_F_CREATE)
+	if (flags & ~BPF_SK_STORAGE_GET_F_CREATE)
 		return (unsigned long)NULL;
 
 	sdata = sk_storage_lookup(sk, map, true);
@@ -668,7 +679,7 @@ const struct bpf_func_proto bpf_sk_storage_get_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_PTR_TO_MAP_VALUE_OR_NULL,
 	.arg1_type	= ARG_CONST_MAP_PTR,
-	.arg2_type	= ARG_PTR_TO_SOCKET,
+	.arg2_type	= ARG_PTR_TO_SOCK_COMMON,
 	.arg3_type	= ARG_PTR_TO_MAP_VALUE_OR_NULL,
 	.arg4_type	= ARG_ANYTHING,
 };
@@ -678,7 +689,25 @@ const struct bpf_func_proto bpf_sk_storage_delete_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_CONST_MAP_PTR,
-	.arg2_type	= ARG_PTR_TO_SOCKET,
+	.arg2_type	= ARG_PTR_TO_SOCK_COMMON,
+};
+
+const struct bpf_func_proto bpf_sk_storage_get_cg_sock_proto = {
+	.func		= bpf_sk_storage_get,
+	.gpl_only	= false,
+	.ret_type	= RET_PTR_TO_MAP_VALUE_OR_NULL,
+	.arg1_type	= ARG_CONST_MAP_PTR,
+	.arg2_type	= ARG_PTR_TO_CTX,
+	.arg3_type	= ARG_PTR_TO_MAP_VALUE_OR_NULL,
+	.arg4_type	= ARG_ANYTHING,
+};
+
+const struct bpf_func_proto bpf_sk_storage_delete_cg_sock_proto = {
+	.func		= bpf_sk_storage_delete,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_CONST_MAP_PTR,
+	.arg2_type	= ARG_PTR_TO_CTX,
 };
 
 static struct bpf_map_type_list sk_storage_map_type __read_mostly = {

@@ -2706,10 +2706,6 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_ringbuf_discard_proto;
 	case BPF_FUNC_ringbuf_query:
 		return &bpf_ringbuf_query_proto;
-	case BPF_FUNC_sk_storage_get:
-		return &bpf_sk_storage_get_proto;
-	case BPF_FUNC_sk_storage_delete:
-		return &bpf_sk_storage_delete_proto;
 	default:
 		return NULL;
 	}
@@ -2773,6 +2769,10 @@ tc_cls_act_func_proto(enum bpf_func_id func_id)
 		return &bpf_skb_under_cgroup_proto;
 	case BPF_FUNC_sk_fullsock:
 		return &bpf_sk_fullsock_proto;
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -2801,6 +2801,10 @@ cg_skb_func_proto(enum bpf_func_id func_id)
 		return &bpf_skb_load_bytes_proto;
 	case BPF_FUNC_skb_load_bytes_relative:
 		return &bpf_skb_load_bytes_relative_proto;
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -3305,20 +3309,59 @@ static const struct bpf_verifier_ops cg_skb_ops = {
 	.convert_ctx_access	= sk_filter_convert_ctx_access,
 };
 
+static const struct bpf_func_proto *
+cg_sock_func_proto(enum bpf_func_id func_id)
+{
+	switch (func_id) {
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_cg_sock_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_cg_sock_proto;
+	default:
+		return sk_filter_func_proto(func_id);
+	}
+}
+
+static const struct bpf_func_proto *
+cg_sock_addr_func_proto(enum bpf_func_id func_id)
+{
+	switch (func_id) {
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
+	default:
+		return sk_filter_func_proto(func_id);
+	}
+}
+
+static const struct bpf_func_proto *
+cg_sockopt_func_proto(enum bpf_func_id func_id)
+{
+	switch (func_id) {
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
+	default:
+		return sk_filter_func_proto(func_id);
+	}
+}
+
 static const struct bpf_verifier_ops cg_sock_ops = {
-	.get_func_proto		= sk_filter_func_proto,
+	.get_func_proto		= cg_sock_func_proto,
 	.is_valid_access	= sock_filter_is_valid_access,
 	.convert_ctx_access	= sock_filter_convert_ctx_access,
 };
 
 static const struct bpf_verifier_ops cg_sock_addr_ops = {
-	.get_func_proto		= sk_filter_func_proto,
+	.get_func_proto		= cg_sock_addr_func_proto,
 	.is_valid_access	= sock_addr_filter_is_valid_access,
 	.convert_ctx_access	= compat_sock_filter_convert_ctx_access,
 };
 
 static const struct bpf_verifier_ops cg_sockopt_ops = {
-	.get_func_proto		= sk_filter_func_proto,
+	.get_func_proto		= cg_sockopt_func_proto,
 	.is_valid_access	= sockopt_filter_is_valid_access,
 	.convert_ctx_access	= compat_sock_filter_convert_ctx_access,
 };

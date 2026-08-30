@@ -52,6 +52,7 @@ enum bpf_stack_slot_type {
 };
 
 #define BPF_REG_SIZE 8	/* size of eBPF register in bytes */
+#define MAX_BPF_REFS 8	/* maximum concurrent tracked references */
 
 /* state of the program:
  * type of all registers and stack info
@@ -60,6 +61,8 @@ struct bpf_verifier_state {
 	struct bpf_reg_state regs[MAX_BPF_REG];
 	u8 stack_slot_type[MAX_BPF_STACK];
 	struct bpf_reg_state spilled_regs[MAX_BPF_STACK / BPF_REG_SIZE];
+	u32 acquired_refs[MAX_BPF_REFS];
+	u8 acquired_ref_cnt;
 };
 
 /* linked list of verifier states used to prune search */

@@ -143,6 +143,7 @@ static struct bpf_ringbuf *bpf_ringbuf_alloc(size_t data_sz, int numa_node)
 static struct bpf_map *ringbuf_map_alloc(union bpf_attr *attr)
 {
 	struct bpf_ringbuf_map *rb_map;
+	u64 cost;
 	int err;
 
 	if (attr->map_flags)
@@ -169,9 +170,10 @@ static struct bpf_map *ringbuf_map_alloc(union bpf_attr *attr)
 	rb_map->map.max_entries = attr->max_entries;
 	rb_map->map.map_flags = attr->map_flags;
 
-	rb_map->map.pages = sizeof(struct bpf_ringbuf_map) +
-			    sizeof(struct bpf_ringbuf) +
-			    attr->max_entries;
+	cost = sizeof(struct bpf_ringbuf_map) +
+	       sizeof(struct bpf_ringbuf) +
+	       (u64)attr->max_entries;
+	rb_map->map.pages = round_up(cost, PAGE_SIZE) >> PAGE_SHIFT;
 	err = bpf_map_precharge_memlock(rb_map->map.pages);
 	if (err)
 		goto err_free_map;
@@ -197,6 +199,7 @@ static void bpf_ringbuf_free(struct bpf_ringbuf *rb)
 	struct page **pages = rb->pages;
 	int i, nr_pages = rb->nr_pages;
 
+	irq_work_sync(&rb->work);
 	vunmap(rb);
 	for (i = 0; i < nr_pages; i++)
 		__free_page(pages[i]);

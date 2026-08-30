@@ -550,6 +550,64 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	}
 }
 
+static bool acquire_ref(struct bpf_verifier_state *state, u32 id)
+{
+	if (state->acquired_ref_cnt >= MAX_BPF_REFS)
+		return false;
+	state->acquired_refs[state->acquired_ref_cnt++] = id;
+	return true;
+}
+
+static bool remove_ref_from_state(struct bpf_verifier_state *state, u32 id)
+{
+	int i, j;
+
+	for (i = 0; i < state->acquired_ref_cnt; i++) {
+		if (state->acquired_refs[i] == id) {
+			for (j = i; j < state->acquired_ref_cnt - 1; j++)
+				state->acquired_refs[j] = state->acquired_refs[j + 1];
+			state->acquired_refs[--state->acquired_ref_cnt] = 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+static void invalidate_alloc_mem_refs(struct bpf_verifier_state *state, u32 id)
+{
+	int i;
+
+	for (i = 0; i < MAX_BPF_REG; i++) {
+		if ((state->regs[i].type == PTR_TO_MEM ||
+		     state->regs[i].type == PTR_TO_MEM_OR_NULL) &&
+		    state->regs[i].id == id) {
+			state->regs[i].type = NOT_INIT;
+			state->regs[i].id = 0;
+			state->regs[i].mem_size = 0;
+			state->regs[i].imm = 0;
+		}
+	}
+
+	for (i = 0; i < MAX_BPF_STACK; i += BPF_REG_SIZE) {
+		if (state->stack_slot_type[i] == STACK_SPILL) {
+			struct bpf_reg_state *sp = &state->spilled_regs[i / BPF_REG_SIZE];
+
+			if ((sp->type == PTR_TO_MEM ||
+			     sp->type == PTR_TO_MEM_OR_NULL) &&
+			    sp->id == id) {
+				int k;
+
+				for (k = 0; k < BPF_REG_SIZE; k++)
+					state->stack_slot_type[i + k] = STACK_INVALID;
+				sp->type = NOT_INIT;
+				sp->id = 0;
+				sp->mem_size = 0;
+				sp->imm = 0;
+			}
+		}
+	}
+}
+
 /* check_stack_read/write functions track spill/fill of registers,
  * stack boundary and alignment are checked in check_mem_access()
  */
@@ -916,6 +974,12 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		if (!err && value_regno >= 0)
 			mark_reg_unknown_value(state->regs, value_regno);
 	} else if (reg->type == PTR_TO_MEM) {
+		if (off < 0 || size <= 0 || off + size > reg->mem_size ||
+		    off + size < off) {
+			verbose("invalid access to memory, R%d off=%d size=%d mem_size=%u\n",
+				regno, off, size, reg->mem_size);
+			return -EACCES;
+		}
 		if (t == BPF_WRITE && value_regno >= 0 &&
 		    is_pointer_value(env, value_regno)) {
 			verbose("R%d leaks addr into mem\n", value_regno);
@@ -1382,6 +1446,16 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 			return err;
 	}
 
+	if (fn->arg1_type == ARG_PTR_TO_ALLOC_MEM) {
+		u32 ref_id = regs[BPF_REG_1].id;
+
+		if (!ref_id || !remove_ref_from_state(&env->cur_state, ref_id)) {
+			verbose("R1 is not a tracked allocated reference or already released\n");
+			return -EINVAL;
+		}
+		invalidate_alloc_mem_refs(&env->cur_state, ref_id);
+	}
+
 	/* reset caller saved regs */
 	for (i = 0; i < CALLER_SAVED_REGS; i++) {
 		reg = regs + caller_saved[i];
@@ -1412,9 +1486,15 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 		regs[BPF_REG_0].max_value = regs[BPF_REG_0].min_value = 0;
 		regs[BPF_REG_0].id = ++env->id_gen;
 	} else if (fn->ret_type == RET_PTR_TO_ALLOC_MEM_OR_NULL) {
+		u32 id = ++env->id_gen;
+
+		if (!acquire_ref(&env->cur_state, id)) {
+			verbose("Too many concurrent references\n");
+			return -E2BIG;
+		}
 		regs[BPF_REG_0].type = PTR_TO_MEM_OR_NULL;
 		regs[BPF_REG_0].max_value = regs[BPF_REG_0].min_value = 0;
-		regs[BPF_REG_0].id = ++env->id_gen;
+		regs[BPF_REG_0].id = id;
 		regs[BPF_REG_0].mem_size = meta.mem_size;
 	} else {
 		verbose("unknown return type %d of func %d\n",
@@ -2046,6 +2126,13 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 			   env->allow_ptr_leaks) {
 			/* reg_imm += K|X */
 			return evaluate_reg_imm_alu(env, insn);
+		} else if (dst_reg->type == PTR_TO_MEM || dst_reg->type == PTR_TO_MEM_OR_NULL ||
+			   (BPF_SRC(insn->code) == BPF_X &&
+			    (regs[insn->src_reg].type == PTR_TO_MEM ||
+			     regs[insn->src_reg].type == PTR_TO_MEM_OR_NULL))) {
+			verbose("R%d pointer arithmetic on PTR_TO_MEM prohibited\n",
+				insn->dst_reg);
+			return -EACCES;
 		} else if (is_pointer_value(env, insn->dst_reg)) {
 			verbose("R%d pointer arithmetic prohibited\n",
 				insn->dst_reg);
@@ -2294,21 +2381,21 @@ static void mark_map_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 	     reg->type == PTR_TO_SOCK_COMMON_OR_NULL ||
 	     reg->type == PTR_TO_MEM_OR_NULL) &&
 	    reg->id == id) {
-		if (type == PTR_TO_MAP_VALUE && reg->type == PTR_TO_SOCKET_OR_NULL)
+		if (type == PTR_TO_MAP_VALUE && reg->type == PTR_TO_SOCKET_OR_NULL) {
 			reg->type = PTR_TO_SOCKET;
-		else if (type == PTR_TO_MAP_VALUE &&
-			 reg->type == PTR_TO_SOCK_COMMON_OR_NULL)
+			reg->id = 0;
+		} else if (type == PTR_TO_MAP_VALUE &&
+			   reg->type == PTR_TO_SOCK_COMMON_OR_NULL) {
 			reg->type = PTR_TO_SOCK_COMMON;
-		else if (type == PTR_TO_MAP_VALUE &&
-			 reg->type == PTR_TO_MEM_OR_NULL)
+			reg->id = 0;
+		} else if (type == PTR_TO_MAP_VALUE &&
+			   reg->type == PTR_TO_MEM_OR_NULL) {
 			reg->type = PTR_TO_MEM;
-		else
+			/* Preserve reg->id for reservation release tracking */
+		} else {
 			reg->type = type;
-		/* We don't need id from this point onwards anymore, thus we
-		 * should better reset it, so that state pruning has chances
-		 * to take effect.
-		 */
-		reg->id = 0;
+			reg->id = 0;
+		}
 		if (type == UNKNOWN_VALUE)
 			__mark_reg_unknown_value(regs, regno);
 	}
@@ -2424,6 +2511,11 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	     dst_reg->type == PTR_TO_SOCKET_OR_NULL ||
 	     dst_reg->type == PTR_TO_SOCK_COMMON_OR_NULL ||
 	     dst_reg->type == PTR_TO_MEM_OR_NULL)) {
+		u32 null_ref_id = 0;
+
+		if (dst_reg->type == PTR_TO_MEM_OR_NULL)
+			null_ref_id = dst_reg->id;
+
 		/* Mark all identical registers in each branch as either
 		 * safe or unknown depending R == 0 or R != 0 conditional.
 		 */
@@ -2431,6 +2523,13 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 			      opcode == BPF_JEQ ? PTR_TO_MAP_VALUE : UNKNOWN_VALUE);
 		mark_map_regs(other_branch, insn->dst_reg,
 			      opcode == BPF_JEQ ? UNKNOWN_VALUE : PTR_TO_MAP_VALUE);
+
+		if (null_ref_id) {
+			if (opcode == BPF_JEQ)
+				remove_ref_from_state(other_branch, null_ref_id);
+			else
+				remove_ref_from_state(this_branch, null_ref_id);
+		}
 	} else if (BPF_SRC(insn->code) == BPF_X && opcode == BPF_JGT &&
 		   dst_reg->type == PTR_TO_PACKET &&
 		   regs[insn->src_reg].type == PTR_TO_PACKET_END) {
@@ -2937,6 +3036,14 @@ static bool states_equal(struct bpf_verifier_env *env,
 		else
 			continue;
 	}
+
+	if (old->acquired_ref_cnt != cur->acquired_ref_cnt)
+		return false;
+	if (old->acquired_ref_cnt > 0 &&
+	    memcmp(old->acquired_refs, cur->acquired_refs,
+		   sizeof(u32) * old->acquired_ref_cnt) != 0)
+		return false;
+
 	return true;
 }
 
@@ -3246,6 +3353,11 @@ static int do_check(struct bpf_verifier_env *env)
 				}
 
 process_bpf_exit:
+				if (env->cur_state.acquired_ref_cnt > 0) {
+					verbose("Unreleased reference id %u at exit\n",
+						env->cur_state.acquired_refs[0]);
+					return -EINVAL;
+				}
 				insn_idx = pop_stack(env, &prev_insn_idx);
 				if (insn_idx < 0) {
 					break;

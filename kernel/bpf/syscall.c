@@ -321,9 +321,11 @@ static int map_create(union bpf_attr *attr)
 		} else {
 			const struct btf_type *key_type, *val_type;
 			u32 key_size = 0, val_size = 0;
+			u32 key_type_id = attr->btf_key_type_id;
+			u32 value_type_id = attr->btf_value_type_id;
 
-			key_type = btf_type_id_size(btf, &attr->btf_key_type_id, &key_size);
-			val_type = btf_type_id_size(btf, &attr->btf_value_type_id, &val_size);
+			key_type = btf_type_id_size(btf, &key_type_id, &key_size);
+			val_type = btf_type_id_size(btf, &value_type_id, &val_size);
 			if (!key_type || key_size != map->key_size ||
 			    !val_type || val_size != map->value_size) {
 				btf_put(btf);
@@ -1112,6 +1114,7 @@ static int bpf_get_next_id_unsupported(union bpf_attr *attr,
 	return -ENOENT;
 }
 
+#ifndef CONFIG_CGROUP_BPF
 #define BPF_PROG_QUERY_LAST_FIELD query.prog_cnt
 
 static int bpf_prog_query_unsupported(union bpf_attr *attr,
@@ -1121,6 +1124,7 @@ static int bpf_prog_query_unsupported(union bpf_attr *attr,
 		return -EINVAL;
 	return -EOPNOTSUPP;
 }
+#endif
 
 #define BPF_PROG_TEST_RUN_LAST_FIELD test.batch_size
 
@@ -1129,6 +1133,32 @@ static int bpf_prog_test_run_unsupported(union bpf_attr *attr)
 	if (CHECK_ATTR(BPF_PROG_TEST_RUN))
 		return -EINVAL;
 	return -EOPNOTSUPP;
+}
+
+#define BPF_BTF_LOAD_LAST_FIELD btf_log_level
+
+static int bpf_btf_load(const union bpf_attr *attr)
+{
+	if (CHECK_ATTR(BPF_BTF_LOAD))
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	return btf_new_fd(attr);
+}
+
+#define BPF_BTF_GET_FD_BY_ID_LAST_FIELD open_flags
+
+static int bpf_btf_get_fd_by_id(const union bpf_attr *attr)
+{
+	if (CHECK_ATTR(BPF_BTF_GET_FD_BY_ID))
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	return btf_get_fd_by_id(attr->btf_id);
 }
 
 #ifdef CONFIG_CGROUP_BPF
@@ -1434,7 +1464,7 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		err = -ENOENT;
 		break;
 	case BPF_BTF_GET_FD_BY_ID:
-		err = btf_get_fd_by_id(attr.btf_id);
+		err = bpf_btf_get_fd_by_id(&attr);
 		break;
 #ifndef CONFIG_CGROUP_BPF
 	case BPF_PROG_QUERY:
@@ -1442,7 +1472,7 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 #endif
 	case BPF_BTF_LOAD:
-		err = btf_new_fd(&attr);
+		err = bpf_btf_load(&attr);
 		break;
 
 #ifdef CONFIG_CGROUP_BPF

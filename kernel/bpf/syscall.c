@@ -1114,9 +1114,9 @@ static int bpf_get_next_id_unsupported(union bpf_attr *attr,
 	return -ENOENT;
 }
 
-#ifndef CONFIG_CGROUP_BPF
 #define BPF_PROG_QUERY_LAST_FIELD query.prog_cnt
 
+#ifndef CONFIG_CGROUP_BPF
 static int bpf_prog_query_unsupported(union bpf_attr *attr,
 				      union bpf_attr __user *uattr)
 {
@@ -1148,7 +1148,7 @@ static int bpf_btf_load(const union bpf_attr *attr)
 	return btf_new_fd(attr);
 }
 
-#define BPF_BTF_GET_FD_BY_ID_LAST_FIELD open_flags
+#define BPF_BTF_GET_FD_BY_ID_LAST_FIELD btf_id
 
 static int bpf_btf_get_fd_by_id(const union bpf_attr *attr)
 {

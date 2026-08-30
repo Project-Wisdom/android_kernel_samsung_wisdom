@@ -339,6 +339,11 @@ static int map_create(union bpf_attr *attr)
 		map->btf_value_type_id = attr->btf_value_type_id;
 	}
 
+	if (attr->map_type == BPF_MAP_TYPE_SK_STORAGE && !map->btf) {
+		err = -EINVAL;
+		goto free_map_nouncharge;
+	}
+
 	err = security_bpf_map_alloc(map);
 	if (err)
 		goto free_map_nouncharge;

@@ -82,18 +82,19 @@ enum bpf_arg_type {
 	ARG_CONST_MAP_PTR,	/* const argument used as pointer to bpf_map */
 	ARG_PTR_TO_MAP_KEY,	/* pointer to stack used as map key */
 	ARG_PTR_TO_MAP_VALUE,	/* pointer to stack used as map value */
+	ARG_PTR_TO_MAP_VALUE_OR_NULL,	/* pointer to stack used as map value or NULL */
 
 	/* the following constraints used to prototype bpf_memcmp() and other
 	 * functions that access data on eBPF program stack
 	 */
-	ARG_PTR_TO_STACK,	/* any pointer to eBPF program stack */
-	ARG_PTR_TO_RAW_STACK,	/* any pointer to eBPF program stack, area does not
-				 * need to be initialized, helper function must fill
-				 * all bytes or clear them in error case.
+	ARG_PTR_TO_MEM,		/* pointer to valid memory (stack, packet, map value, alloc mem) */
+	ARG_PTR_TO_UNINIT_MEM,	/* pointer to memory does not need to be initialized,
+				 * helper function must fill all bytes or clear
+				 * them in error case.
 				 */
 
-	ARG_CONST_STACK_SIZE,	/* number of bytes accessed from stack */
-	ARG_CONST_STACK_SIZE_OR_ZERO, /* number of bytes accessed from stack or 0 */
+	ARG_CONST_SIZE,		/* number of bytes accessed from memory */
+	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
@@ -103,6 +104,11 @@ enum bpf_arg_type {
 	ARG_PTR_TO_ALLOC_MEM_OR_NULL,	/* pointer to dynamically allocated memory or NULL */
 	ARG_CONST_ALLOC_SIZE_OR_ZERO,	/* number of allocated bytes requested */
 };
+
+#define ARG_PTR_TO_STACK		ARG_PTR_TO_MEM
+#define ARG_PTR_TO_RAW_STACK		ARG_PTR_TO_UNINIT_MEM
+#define ARG_CONST_STACK_SIZE		ARG_CONST_SIZE
+#define ARG_CONST_STACK_SIZE_OR_ZERO	ARG_CONST_SIZE_OR_ZERO
 
 /* type of values returned from helper functions */
 enum bpf_return_type {

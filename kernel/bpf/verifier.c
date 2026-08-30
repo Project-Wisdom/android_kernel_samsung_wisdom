@@ -1096,6 +1096,70 @@ static int check_stack_boundary(struct bpf_verifier_env *env, int regno,
 	return 0;
 }
 
+static int check_mem_region_access(struct bpf_verifier_env *env, u32 regno,
+				   int off, int size, u32 mem_size,
+				   bool zero_size_allowed)
+{
+	if (size < 0 || off < 0) {
+		verbose("R%d min value is negative, either use unsigned index or check for index >= 0\n",
+			regno);
+		return -EACCES;
+	}
+
+	if (size == 0) {
+		if (zero_size_allowed)
+			return 0;
+		verbose("invalid zero size memory access\n");
+		return -EACCES;
+	}
+
+	if (off + size < off || off + size > mem_size) {
+		verbose("invalid access to memory, R%d size=%d off=%d mem_size=%u\n",
+			regno, size, off, mem_size);
+		return -EACCES;
+	}
+
+	return 0;
+}
+
+static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
+				   int access_size, bool zero_size_allowed,
+				   struct bpf_call_arg_meta *meta)
+{
+	struct bpf_reg_state *regs = env->cur_state.regs;
+	struct bpf_reg_state *reg = &regs[regno];
+
+	switch (reg->type) {
+	case PTR_TO_PACKET:
+		return check_packet_access(env, regno, 0, access_size);
+	case PTR_TO_MAP_VALUE:
+		return check_map_access(env, regno, 0, access_size);
+	case PTR_TO_MAP_VALUE_ADJ:
+		if (reg->min_value < 0) {
+			verbose("R%d min value is negative\n", regno);
+			return -EACCES;
+		}
+		if (reg->max_value == BPF_REGISTER_MAX_RANGE) {
+			verbose("R%d unbounded memory access\n", regno);
+			return -EACCES;
+		}
+		return check_map_access(env, regno, reg->max_value, access_size);
+	case PTR_TO_MEM:
+		return check_mem_region_access(env, regno, 0, access_size,
+					       reg->mem_size, zero_size_allowed);
+	case PTR_TO_STACK:
+	case FRAME_PTR:
+		return check_stack_boundary(env, regno, access_size,
+					    zero_size_allowed, meta);
+	default:
+		if (reg->type == CONST_IMM && reg->imm == 0 && zero_size_allowed)
+			return 0;
+		verbose("R%d invalid memory pointer '%s'\n",
+			regno, reg_type_str[reg->type]);
+		return -EACCES;
+	}
+}
+
 static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			  enum bpf_arg_type arg_type,
 			  struct bpf_call_arg_meta *meta)
@@ -1126,12 +1190,16 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 	}
 
 	if (arg_type == ARG_PTR_TO_MAP_KEY ||
-	    arg_type == ARG_PTR_TO_MAP_VALUE) {
+	    arg_type == ARG_PTR_TO_MAP_VALUE ||
+	    arg_type == ARG_PTR_TO_MAP_VALUE_OR_NULL) {
 		expected_type = PTR_TO_STACK;
-		if (type != PTR_TO_PACKET && type != expected_type)
+		if (type == CONST_IMM && reg->imm == 0 &&
+		    arg_type == ARG_PTR_TO_MAP_VALUE_OR_NULL)
+			/* final test in check_stack_boundary() */;
+		else if (type != PTR_TO_PACKET && type != expected_type)
 			goto err_type;
-	} else if (arg_type == ARG_CONST_STACK_SIZE ||
-		   arg_type == ARG_CONST_STACK_SIZE_OR_ZERO) {
+	} else if (arg_type == ARG_CONST_SIZE ||
+		   arg_type == ARG_CONST_SIZE_OR_ZERO) {
 		expected_type = CONST_IMM;
 		if (type != expected_type)
 			goto err_type;
@@ -1151,20 +1219,20 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		expected_type = PTR_TO_SOCKET;
 		if (type != expected_type && type != PTR_TO_CTX)
 			goto err_type;
-	} else if (arg_type == ARG_PTR_TO_STACK ||
-		   arg_type == ARG_PTR_TO_RAW_STACK) {
+	} else if (arg_type == ARG_PTR_TO_MEM ||
+		   arg_type == ARG_PTR_TO_UNINIT_MEM) {
 		expected_type = PTR_TO_STACK;
 		/* One exception here. In case function allows for NULL to be
 		 * passed in as argument, it's a CONST_IMM type. Final test
-		 * happens during stack boundary checking.
+		 * happens during helper mem access checking.
 		 */
 		if (type == CONST_IMM && reg->imm == 0)
-			/* final test in check_stack_boundary() */;
+			/* final test in check_helper_mem_access() */;
 		else if (type != PTR_TO_PACKET && type != PTR_TO_MAP_VALUE &&
 			 type != PTR_TO_MEM && type != PTR_TO_MAP_VALUE_ADJ &&
-			 type != expected_type)
+			 type != PTR_TO_STACK && type != FRAME_PTR)
 			goto err_type;
-		meta->raw_mode = arg_type == ARG_PTR_TO_RAW_STACK;
+		meta->raw_mode = (arg_type == ARG_PTR_TO_UNINIT_MEM);
 	} else if (arg_type == ARG_PTR_TO_ALLOC_MEM ||
 		   arg_type == ARG_PTR_TO_ALLOC_MEM_OR_NULL) {
 		expected_type = PTR_TO_MEM;
@@ -1222,26 +1290,21 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			err = check_stack_boundary(env, regno,
 						   meta->map_ptr->value_size,
 						   false, NULL);
-	} else if (arg_type == ARG_CONST_STACK_SIZE ||
-		   arg_type == ARG_CONST_STACK_SIZE_OR_ZERO) {
-		bool zero_size_allowed = (arg_type == ARG_CONST_STACK_SIZE_OR_ZERO);
+	} else if (arg_type == ARG_CONST_SIZE ||
+		   arg_type == ARG_CONST_SIZE_OR_ZERO) {
+		bool zero_size_allowed = (arg_type == ARG_CONST_SIZE_OR_ZERO);
 
 		/* bpf_xxx(..., buf, len) call will access 'len' bytes
-		 * from stack pointer 'buf'. Check it
+		 * from memory pointer 'buf'. Check it
 		 * note: regno == len, regno - 1 == buf
 		 */
 		if (regno == 0) {
 			/* kernel subsystem misconfigured verifier */
-			verbose("ARG_CONST_STACK_SIZE cannot be first argument\n");
+			verbose("ARG_CONST_SIZE cannot be first argument\n");
 			return -EACCES;
 		}
-		if (regs[regno - 1].type == PTR_TO_PACKET)
-			err = check_packet_access(env, regno - 1, 0, reg->imm);
-		else if (regs[regno - 1].type == PTR_TO_MEM)
-			err = 0;
-		else
-			err = check_stack_boundary(env, regno - 1, reg->imm,
-						   zero_size_allowed, meta);
+		err = check_helper_mem_access(env, regno - 1, reg->imm,
+					      zero_size_allowed, meta);
 	} else if (arg_type == ARG_CONST_ALLOC_SIZE_OR_ZERO) {
 		meta->mem_size = reg->imm;
 	} else if (arg_type == ARG_PTR_TO_ALLOC_MEM ||

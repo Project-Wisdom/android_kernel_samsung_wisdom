@@ -23,6 +23,7 @@
 #include <linux/bpf-cgroup.h>
 #include <linux/mm.h>
 #include <linux/poll.h>
+#include <linux/btf.h>
 
 #define BPF_OBJ_FLAG_MASK   (BPF_F_RDONLY | BPF_F_WRONLY | \
 			     BPF_F_RDONLY_PROG | BPF_F_WRONLY_PROG)
@@ -128,6 +129,7 @@ static void bpf_map_free_deferred(struct work_struct *work)
 
 	bpf_map_uncharge_memlock(map);
 	security_bpf_map_free(map);
+	btf_put(map->btf);
 	/* implementation dependent freeing */
 	map->ops->map_free(map);
 }
@@ -295,6 +297,46 @@ static int map_create(union bpf_attr *attr)
 	atomic_set(&map->refcnt, 1);
 	atomic_set(&map->usercnt, 1);
 
+	if (attr->btf_key_type_id || attr->btf_value_type_id || attr->btf_fd) {
+		struct btf *btf;
+
+		if (!attr->btf_key_type_id || !attr->btf_value_type_id) {
+			err = -EINVAL;
+			goto free_map_nouncharge;
+		}
+
+		btf = btf_get_by_fd(attr->btf_fd);
+		if (IS_ERR(btf)) {
+			err = PTR_ERR(btf);
+			goto free_map_nouncharge;
+		}
+
+		if (map->ops->map_check_btf) {
+			err = map->ops->map_check_btf(map, btf, attr->btf_key_type_id,
+						      attr->btf_value_type_id);
+			if (err) {
+				btf_put(btf);
+				goto free_map_nouncharge;
+			}
+		} else {
+			const struct btf_type *key_type, *val_type;
+			u32 key_size = 0, val_size = 0;
+
+			key_type = btf_type_id_size(btf, &attr->btf_key_type_id, &key_size);
+			val_type = btf_type_id_size(btf, &attr->btf_value_type_id, &val_size);
+			if (!key_type || key_size != map->key_size ||
+			    !val_type || val_size != map->value_size) {
+				btf_put(btf);
+				err = -EINVAL;
+				goto free_map_nouncharge;
+			}
+		}
+
+		map->btf = btf;
+		map->btf_key_type_id = attr->btf_key_type_id;
+		map->btf_value_type_id = attr->btf_value_type_id;
+	}
+
 	err = security_bpf_map_alloc(map);
 	if (err)
 		goto free_map_nouncharge;
@@ -315,6 +357,7 @@ free_map:
 free_map_sec:
 	security_bpf_map_free(map);
 free_map_nouncharge:
+	btf_put(map->btf);
 	map->ops->map_free(map);
 	return err;
 }
@@ -375,9 +418,6 @@ static void bpf_map_create_compat(union bpf_attr *attr)
 	attr->numa_node = 0;
 	memset(attr->map_name, 0, sizeof(attr->map_name));
 	attr->map_ifindex = 0;
-	attr->btf_fd = 0;
-	attr->btf_key_type_id = 0;
-	attr->btf_value_type_id = 0;
 	attr->btf_vmlinux_value_type_id = 0;
 	attr->map_extra = 0;
 	attr->value_type_btf_obj_fd = 0;
@@ -999,6 +1039,12 @@ static int bpf_obj_get_info_by_fd(union bpf_attr *attr,
 		else
 			info.map_flags = map->map_flags;
 
+		if (map->btf) {
+			info.btf_id = btf_id(map->btf);
+			info.btf_key_type_id = map->btf_key_type_id;
+			info.btf_value_type_id = map->btf_value_type_id;
+		}
+
 		info_len = min_t(u32, attr->info.info_len, sizeof(info));
 		if (copy_to_user(u64_to_ptr(attr->info.info), &info, info_len) ||
 		    put_user(info_len, &uattr->info.info_len))
@@ -1020,6 +1066,8 @@ static int bpf_obj_get_info_by_fd(union bpf_attr *attr,
 			err = -EFAULT;
 		else
 			err = 0;
+	} else if (f.file->f_op == &btf_fops) {
+		err = btf_get_info_by_fd(f.file->private_data, attr, uattr);
 	}
 
 	fdput(f);
@@ -1081,26 +1129,6 @@ static int bpf_prog_test_run_unsupported(union bpf_attr *attr)
 	if (CHECK_ATTR(BPF_PROG_TEST_RUN))
 		return -EINVAL;
 	return -EOPNOTSUPP;
-}
-
-#define BPF_BTF_LOAD_LAST_FIELD btf_log_level
-
-static int bpf_btf_release(struct inode *inode, struct file *filp)
-{
-	return 0;
-}
-
-static const struct file_operations bpf_btf_fops = {
-	.release	= bpf_btf_release,
-	.read		= bpf_dummy_read,
-};
-
-static int bpf_btf_load_compat(union bpf_attr *attr)
-{
-	if (CHECK_ATTR(BPF_BTF_LOAD))
-		return -EINVAL;
-	return anon_inode_getfd("bpf-btf", &bpf_btf_fops, NULL,
-				O_RDONLY | O_CLOEXEC);
 }
 
 #ifdef CONFIG_CGROUP_BPF
@@ -1403,8 +1431,10 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 	case BPF_PROG_GET_FD_BY_ID:
 	case BPF_MAP_GET_FD_BY_ID:
-	case BPF_BTF_GET_FD_BY_ID:
 		err = -ENOENT;
+		break;
+	case BPF_BTF_GET_FD_BY_ID:
+		err = btf_get_fd_by_id(attr.btf_id);
 		break;
 #ifndef CONFIG_CGROUP_BPF
 	case BPF_PROG_QUERY:
@@ -1412,7 +1442,7 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 #endif
 	case BPF_BTF_LOAD:
-		err = bpf_btf_load_compat(&attr);
+		err = btf_new_fd(&attr);
 		break;
 
 #ifdef CONFIG_CGROUP_BPF

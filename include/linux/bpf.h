@@ -15,6 +15,7 @@
 
 struct perf_event;
 struct bpf_map;
+struct btf;
 struct vm_area_struct;
 struct poll_table_struct;
 
@@ -38,6 +39,11 @@ struct bpf_map_ops {
 	void *(*map_fd_get_ptr)(struct bpf_map *map, struct file *map_file,
 				int fd);
 	void (*map_fd_put_ptr)(void *ptr);
+
+	int (*map_check_btf)(const struct bpf_map *map,
+			     const struct btf *btf,
+			     u32 key_type_id,
+			     u32 value_type_id);
 };
 
 struct bpf_map {
@@ -61,6 +67,9 @@ struct bpf_map {
 	atomic_t refcnt;
 	atomic_t usercnt;
 	struct work_struct work;
+	struct btf *btf;
+	u32 btf_key_type_id;
+	u32 btf_value_type_id;
 #ifdef CONFIG_SECURITY
 	void *security;
 #endif

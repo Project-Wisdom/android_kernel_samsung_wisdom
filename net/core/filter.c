@@ -3315,8 +3315,6 @@ cg_sock_func_proto(enum bpf_func_id func_id)
 	switch (func_id) {
 	case BPF_FUNC_sk_storage_get:
 		return &bpf_sk_storage_get_cg_sock_proto;
-	case BPF_FUNC_sk_storage_delete:
-		return &bpf_sk_storage_delete_cg_sock_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}

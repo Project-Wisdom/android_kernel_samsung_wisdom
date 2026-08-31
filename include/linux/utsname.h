@@ -86,6 +86,10 @@ static inline struct new_utsname *utsname(void)
 #endif
 		char fake_release_prepended[64];
 
+		/*
+		 * Networking daemons require modern BPF capability version advertisement (5.15),
+		 * while core Android platform daemons require legacy Treble compatibility (4.9).
+		 */
 		if (!strcmp(current->comm, "bpfloader") ||
 		    !strcmp(current->comm, "netbpfload") ||
 		    !strcmp(current->comm, "netd"))

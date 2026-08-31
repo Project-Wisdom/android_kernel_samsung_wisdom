@@ -2677,7 +2677,7 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 
 BPF_CALL_1(bpf_sk_fullsock, struct sock *, sk)
 {
-	return (unsigned long)NULL;
+	return sk && sk_fullsock(sk) ? (unsigned long)sk : (unsigned long)NULL;
 }
 
 static const struct bpf_func_proto bpf_sk_fullsock_proto = {

@@ -2716,6 +2716,8 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_socket_uid_proto;
 	case BPF_FUNC_get_current_uid_gid:
 		return &bpf_get_current_uid_gid_proto;
+	case BPF_FUNC_get_current_pid_tgid:
+		return &bpf_get_current_pid_tgid_proto;
 	case BPF_FUNC_ringbuf_output:
 		return &bpf_ringbuf_output_proto;
 	case BPF_FUNC_ringbuf_reserve:
@@ -3033,6 +3035,8 @@ static bool sock_filter_is_valid_access(int off, int size,
 	if (type == BPF_WRITE) {
 		switch (off) {
 		case offsetof(struct bpf_sock, bound_dev_if):
+		case offsetof(struct bpf_sock, mark):
+		case offsetof(struct bpf_sock, priority):
 			break;
 		default:
 			return false;
@@ -3044,6 +3048,9 @@ static bool sock_filter_is_valid_access(int off, int size,
 
 	/* The verifier guarantees that size > 0. */
 	if (off % size != 0)
+		return false;
+
+	if (size != sizeof(__u32))
 		return false;
 
 	return true;
@@ -3373,7 +3380,7 @@ static u32 sk_filter_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 }
 
 static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
-				  int dst_reg, int src_reg,
+					  int dst_reg, int src_reg,
 					  int ctx_off,
 					  struct bpf_insn *insn_buf,
 					  struct bpf_prog *prog)
@@ -3386,10 +3393,53 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
 
 		if (type == BPF_WRITE)
 			*insn++ = BPF_STX_MEM(BPF_W, dst_reg, src_reg,
-					offsetof(struct sock, sk_bound_dev_if));
+					      offsetof(struct sock, sk_bound_dev_if));
 		else
 			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
-				      offsetof(struct sock, sk_bound_dev_if));
+					      offsetof(struct sock, sk_bound_dev_if));
+		break;
+
+	case offsetof(struct bpf_sock, family):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock, sk_family) != 2);
+
+		*insn++ = BPF_LDX_MEM(BPF_H, dst_reg, src_reg,
+				      offsetof(struct sock, sk_family));
+		break;
+
+	case offsetof(struct bpf_sock, type):
+		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+				      offsetof(struct sock, sk_wmem_queued) - sizeof(int));
+		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, 16);
+		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, 0xffff);
+		break;
+
+	case offsetof(struct bpf_sock, protocol):
+		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+				      offsetof(struct sock, sk_wmem_queued) - sizeof(int));
+		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, 8);
+		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, 0xff);
+		break;
+
+	case offsetof(struct bpf_sock, mark):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock, sk_mark) != 4);
+
+		if (type == BPF_WRITE)
+			*insn++ = BPF_STX_MEM(BPF_W, dst_reg, src_reg,
+					      offsetof(struct sock, sk_mark));
+		else
+			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+					      offsetof(struct sock, sk_mark));
+		break;
+
+	case offsetof(struct bpf_sock, priority):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock, sk_priority) != 4);
+
+		if (type == BPF_WRITE)
+			*insn++ = BPF_STX_MEM(BPF_W, dst_reg, src_reg,
+					      offsetof(struct sock, sk_priority));
+		else
+			*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+					      offsetof(struct sock, sk_priority));
 		break;
 	}
 

@@ -219,6 +219,7 @@ struct bpf_prog_type_list {
 
 struct bpf_prog_aux {
 	atomic_t refcnt;
+	u32 id;
 	u32 used_map_cnt;
 	u32 max_ctx_offset;
 	const struct bpf_verifier_ops *ops;

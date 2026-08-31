@@ -813,6 +813,8 @@ static void __bpf_prog_put_rcu(struct rcu_head *rcu)
 	bpf_prog_free(aux->prog);
 }
 
+static atomic_t prog_id_gen = ATOMIC_INIT(1);
+
 void bpf_prog_put(struct bpf_prog *prog)
 {
 	if (atomic_dec_and_test(&prog->aux->refcnt))
@@ -964,6 +966,7 @@ static int bpf_prog_load(union bpf_attr *attr)
 
 	prog->orig_prog = NULL;
 	prog->jited = 0;
+	prog->aux->id = atomic_inc_return(&prog_id_gen);
 
 	atomic_set(&prog->aux->refcnt, 1);
 	prog->gpl_compatible = is_gpl ? 1 : 0;
@@ -1357,21 +1360,30 @@ static int bpf_prog_query(const union bpf_attr *attr,
 		list_for_each_entry(pl, progs, node) {
 			if (!pl->prog)
 				continue;
+			if (attr->query.prog_ids && cnt < attr->query.prog_cnt) {
+				u32 prog_id = pl->prog->aux->id ? : 1;
+
+				if (put_user(prog_id, (__u32 __user *)(unsigned long)attr->query.prog_ids + cnt)) {
+					cgroup_put(cgrp);
+					return -EFAULT;
+				}
+			}
 			cnt++;
-			if (!id)
-				id = 1;
 		}
 	} else if (cgrp->bpf.compat_attached[attr->query.attach_type]) {
 		cnt = 1;
 		id = 1;
+		if (attr->query.prog_ids && attr->query.prog_cnt) {
+			if (put_user(id, (__u32 __user *)(unsigned long)attr->query.prog_ids)) {
+				cgroup_put(cgrp);
+				return -EFAULT;
+			}
+		}
 	}
 
 	cgroup_put(cgrp);
 
 	if (put_user(cnt, &uattr->query.prog_cnt))
-		return -EFAULT;
-	if (cnt && attr->query.prog_ids &&
-	    put_user(id, (__u32 __user *)(unsigned long)attr->query.prog_ids))
 		return -EFAULT;
 
 	return 0;

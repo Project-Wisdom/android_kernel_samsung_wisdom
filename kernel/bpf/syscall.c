@@ -1187,6 +1187,7 @@ static bool bpf_cgroup_attach_type_supported(enum bpf_attach_type type)
 	case BPF_CGROUP_INET_INGRESS:
 	case BPF_CGROUP_INET_EGRESS:
 	case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 		return true;
 	default:
 		return false;
@@ -1206,7 +1207,6 @@ static bool bpf_cgroup_attach_type_compat(enum bpf_attach_type type)
 	case BPF_CGROUP_UDP6_SENDMSG:
 	case BPF_CGROUP_GETSOCKOPT:
 	case BPF_CGROUP_SETSOCKOPT:
-	case BPF_CGROUP_INET_SOCK_RELEASE:
 		return true;
 	default:
 		return false;
@@ -1249,6 +1249,7 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		cgroup_put(cgrp);
 		break;
 	case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 		prog = bpf_prog_get_type(attr->attach_bpf_fd,
 					 BPF_PROG_TYPE_CGROUP_SOCK);
 		if (IS_ERR(prog))
@@ -1302,6 +1303,7 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
 		break;
 	case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
 		break;
 	default:

@@ -501,19 +501,18 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		goto out;
 
 	snum = ntohs(addr->sin_port);
-	err = -EACCES;
-	if (snum && snum < PROT_SOCK &&
-	    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
-		goto out;
-
 	{
 		int flags = BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr);
 		if (flags < 0) {
 			err = -EPERM;
 			goto out;
 		}
-		if (flags & BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE)
-			err = 0;
+		if (snum && snum < PROT_SOCK &&
+		    !(flags & BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE) &&
+		    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE)) {
+			err = -EACCES;
+			goto out;
+		}
 	}
 
 	/*      We keep a pair of addresses. rcv_saddr is the one

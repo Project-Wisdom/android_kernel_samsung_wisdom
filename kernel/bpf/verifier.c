@@ -952,10 +952,18 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 
 	if (reg->type == PTR_TO_MAP_VALUE ||
 	    reg->type == PTR_TO_MAP_VALUE_ADJ) {
-		if (t == BPF_WRITE && value_regno >= 0 &&
-		    is_pointer_value(env, value_regno)) {
-			verbose("R%d leaks addr into map\n", value_regno);
-			return -EACCES;
+		if (t == BPF_WRITE) {
+			if (reg->map_ptr &&
+			    (reg->map_ptr->map_type == BPF_MAP_TYPE_DEVMAP_HASH ||
+			     reg->map_ptr->map_type == BPF_MAP_TYPE_DEVMAP ||
+			     (reg->map_ptr->map_flags & BPF_F_RDONLY_PROG))) {
+				verbose("write into map forbidden\n");
+				return -EACCES;
+			}
+			if (value_regno >= 0 && is_pointer_value(env, value_regno)) {
+				verbose("R%d leaks addr into map\n", value_regno);
+				return -EACCES;
+			}
 		}
 
 		/* If we adjusted the register to this map value at all then we
@@ -1433,6 +1441,11 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 	case BPF_MAP_TYPE_SK_STORAGE:
 		if (func_id != BPF_FUNC_sk_storage_get &&
 		    func_id != BPF_FUNC_sk_storage_delete)
+			goto error;
+		break;
+	case BPF_MAP_TYPE_DEVMAP:
+	case BPF_MAP_TYPE_DEVMAP_HASH:
+		if (func_id != BPF_FUNC_map_lookup_elem)
 			goto error;
 		break;
 	default:

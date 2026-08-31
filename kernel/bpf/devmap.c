@@ -132,13 +132,36 @@ static int dev_map_hash_update_elem(struct bpf_map *map, void *key, void *value,
 	if (!ifindex)
 		return -EINVAL;
 
+	spin_lock_bh(&dtab->index_lock);
+
+	head = dev_map_index_hash(dtab, idx);
+	old_dev = __dev_map_hash_lookup_elem(dtab, idx);
+
+	if (old_dev && (map_flags == BPF_NOEXIST)) {
+		spin_unlock_bh(&dtab->index_lock);
+		return -EEXIST;
+	}
+
+	if (!old_dev && (map_flags == BPF_EXIST)) {
+		spin_unlock_bh(&dtab->index_lock);
+		return -ENOENT;
+	}
+
+	if (!old_dev && (dtab->items >= dtab->map.max_entries)) {
+		spin_unlock_bh(&dtab->index_lock);
+		return -E2BIG;
+	}
+
 	netdev = dev_get_by_index(net, ifindex);
-	if (!netdev)
+	if (!netdev) {
+		spin_unlock_bh(&dtab->index_lock);
 		return -EINVAL;
+	}
 
 	dev = kzalloc(sizeof(*dev), GFP_ATOMIC | __GFP_NOWARN);
 	if (!dev) {
 		dev_put(netdev);
+		spin_unlock_bh(&dtab->index_lock);
 		return -ENOMEM;
 	}
 
@@ -147,38 +170,13 @@ static int dev_map_hash_update_elem(struct bpf_map *map, void *key, void *value,
 	dev->ifindex = ifindex;
 	dev->dtab = dtab;
 
-	spin_lock_bh(&dtab->index_lock);
-
-	head = dev_map_index_hash(dtab, idx);
-	old_dev = __dev_map_hash_lookup_elem(dtab, idx);
-
 	if (old_dev) {
-		if (map_flags == BPF_NOEXIST) {
-			spin_unlock_bh(&dtab->index_lock);
-			dev_put(netdev);
-			kfree(dev);
-			return -EEXIST;
-		}
 		hlist_del_rcu(&old_dev->index_hlist);
 		hlist_add_head_rcu(&dev->index_hlist, head);
 		spin_unlock_bh(&dtab->index_lock);
 
 		call_rcu(&old_dev->rcu, __dev_map_entry_free);
 		return 0;
-	}
-
-	if (map_flags == BPF_EXIST) {
-		spin_unlock_bh(&dtab->index_lock);
-		dev_put(netdev);
-		kfree(dev);
-		return -ENOENT;
-	}
-
-	if (dtab->items >= dtab->map.max_entries) {
-		spin_unlock_bh(&dtab->index_lock);
-		dev_put(netdev);
-		kfree(dev);
-		return -E2BIG;
 	}
 
 	hlist_add_head_rcu(&dev->index_hlist, head);

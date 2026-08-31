@@ -1196,15 +1196,6 @@ static bool bpf_cgroup_attach_type_supported(enum bpf_attach_type type)
 	case BPF_CGROUP_UDP6_RECVMSG:
 	case BPF_CGROUP_UDP4_SENDMSG:
 	case BPF_CGROUP_UDP6_SENDMSG:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static bool bpf_cgroup_attach_type_compat(enum bpf_attach_type type)
-{
-	switch (type) {
 	case BPF_CGROUP_GETSOCKOPT:
 	case BPF_CGROUP_SETSOCKOPT:
 		return true;
@@ -1292,15 +1283,26 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 			bpf_prog_put(prog);
 		cgroup_put(cgrp);
 		break;
-	default:
-		if (bpf_cgroup_attach_type_compat(attr->attach_type)) {
-			cgrp = cgroup_get_from_fd(attr->target_fd);
-			if (IS_ERR(cgrp))
-				return PTR_ERR(cgrp);
-			cgrp->bpf.compat_attached[attr->attach_type] = 1;
-			cgroup_put(cgrp);
-			return 0;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+		prog = bpf_prog_get_type(attr->attach_bpf_fd,
+					 BPF_PROG_TYPE_CGROUP_SOCKOPT);
+		if (IS_ERR(prog))
+			return PTR_ERR(prog);
+
+		cgrp = cgroup_get_from_fd(attr->target_fd);
+		if (IS_ERR(cgrp)) {
+			bpf_prog_put(prog);
+			return PTR_ERR(cgrp);
 		}
+
+		ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type,
+					attr->attach_flags);
+		if (ret)
+			bpf_prog_put(prog);
+		cgroup_put(cgrp);
+		break;
+	default:
 		return -EINVAL;
 	}
 
@@ -1341,15 +1343,11 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 	case BPF_CGROUP_UDP6_SENDMSG:
 		ptype = BPF_PROG_TYPE_CGROUP_SOCK_ADDR;
 		break;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+		ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
+		break;
 	default:
-		if (bpf_cgroup_attach_type_compat(attr->attach_type)) {
-			cgrp = cgroup_get_from_fd(attr->target_fd);
-			if (IS_ERR(cgrp))
-				return PTR_ERR(cgrp);
-			cgrp->bpf.compat_attached[attr->attach_type] = 0;
-			cgroup_put(cgrp);
-			return 0;
-		}
 		return -EINVAL;
 	}
 
@@ -1373,7 +1371,6 @@ static int bpf_prog_query(const union bpf_attr *attr,
 {
 	struct cgroup *cgrp;
 	u32 cnt = 0;
-	u32 id = 0;
 
 	if (CHECK_ATTR(BPF_PROG_QUERY))
 		return -EINVAL;
@@ -1381,8 +1378,7 @@ static int bpf_prog_query(const union bpf_attr *attr,
 	if (attr->query.query_flags)
 		return -EINVAL;
 
-	if (!bpf_cgroup_attach_type_supported(attr->query.attach_type) &&
-	    !bpf_cgroup_attach_type_compat(attr->query.attach_type))
+	if (!bpf_cgroup_attach_type_supported(attr->query.attach_type))
 		return -EINVAL;
 
 	cgrp = cgroup_get_from_fd(attr->query.target_fd);
@@ -1406,15 +1402,6 @@ static int bpf_prog_query(const union bpf_attr *attr,
 				}
 			}
 			cnt++;
-		}
-	} else if (cgrp->bpf.compat_attached[attr->query.attach_type]) {
-		cnt = 1;
-		id = 1;
-		if (attr->query.prog_ids && attr->query.prog_cnt) {
-			if (put_user(id, (__u32 __user *)(unsigned long)attr->query.prog_ids)) {
-				cgroup_put(cgrp);
-				return -EFAULT;
-			}
 		}
 	}
 

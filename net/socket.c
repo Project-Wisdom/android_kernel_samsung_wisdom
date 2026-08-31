@@ -1760,6 +1760,14 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 		if (err)
 			goto out_put;
 
+		err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
+						    optval, &optlen, NULL);
+		if (err) {
+			if (err > 0)
+				err = 0;
+			goto out_put;
+		}
+
 		if (level == SOL_SOCKET)
 			err =
 			    sock_setsockopt(sock, level, optname, optval,
@@ -1787,6 +1795,13 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock != NULL) {
+		int max_optlen = 0;
+
+		if (optlen && get_user(max_optlen, optlen)) {
+			err = -EFAULT;
+			goto out_put;
+		}
+
 		err = security_socket_getsockopt(sock, level, optname);
 		if (err)
 			goto out_put;
@@ -1799,6 +1814,10 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 			err =
 			    sock->ops->getsockopt(sock, level, optname, optval,
 						  optlen);
+
+		err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
+						    optval, optlen, max_optlen,
+						    err);
 out_put:
 		fput_light(sock->file, fput_needed);
 	}

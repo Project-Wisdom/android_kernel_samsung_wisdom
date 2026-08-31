@@ -34,8 +34,6 @@ struct cgroup_bpf {
 
 	/* temp storage for effective prog array used by prog_attach/detach */
 	struct bpf_prog_array __rcu *inactive;
-
-	u8 compat_attached[MAX_BPF_ATTACH_TYPE];
 };
 
 void cgroup_bpf_put(struct cgroup *cgrp);
@@ -100,10 +98,35 @@ struct bpf_sock_addr_kern {
 	u32 flags;
 };
 
+struct bpf_sockopt_kern {
+	struct sock *sk;
+	void *optval;
+	void *optval_end;
+	s32 level;
+	s32 optname;
+	s32 optlen;
+	s32 retval;
+};
+
 int __cgroup_bpf_run_filter_sock_addr(struct sock *sk,
 				      struct sockaddr *uaddr,
 				      enum bpf_attach_type type,
 				      u32 *flags);
+
+int __cgroup_bpf_run_filter_setsockopt(struct sock *sk,
+				       int *level,
+				       int *optname,
+				       char __user *optval,
+				       int *optlen,
+				       char **kernel_optval);
+
+int __cgroup_bpf_run_filter_getsockopt(struct sock *sk,
+				       int level,
+				       int optname,
+				       char __user *optval,
+				       int __user *optlen,
+				       int max_optlen,
+				       int retval);
 
 #define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk)			       \
 ({									       \
@@ -205,6 +228,28 @@ int __cgroup_bpf_run_filter_sock_addr(struct sock *sk,
 	__ret;								       \
 })
 
+#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, optname, optval, optlen, kernel_optval) \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_setsockopt(sk, level, optname, \
+							  optval, optlen,      \
+							  kernel_optval);      \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, optname, optval, optlen, max_optlen, retval) \
+({									       \
+	int __ret = retval;						       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_getsockopt(sk, level, optname, \
+							  optval, optlen,      \
+							  max_optlen, retval); \
+	}								       \
+	__ret;								       \
+})
+
 #else
 
 struct cgroup_bpf {};
@@ -223,6 +268,8 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 #define BPF_CGROUP_RUN_PROG_UDP6_SENDMSG(sk, uaddr) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_UDP4_RECVMSG(sk, uaddr) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_UDP6_RECVMSG(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, optname, optval, optlen, kernel_optval) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, optname, optval, optlen, max_optlen, retval) ({ retval; })
 
 #endif /* CONFIG_CGROUP_BPF */
 

@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/bpf.h>
 #include <linux/bpf-cgroup.h>
+#include <linux/uaccess.h>
 #include <net/sock.h>
 
 DEFINE_STATIC_KEY_FALSE(cgroup_bpf_enabled_key);
@@ -478,3 +479,114 @@ int __cgroup_bpf_run_filter_sock_addr(struct sock *sk,
 	return 0;
 }
 EXPORT_SYMBOL(__cgroup_bpf_run_filter_sock_addr);
+
+#define BPF_SOCKOPT_BUF_SIZE 128
+
+int __cgroup_bpf_run_filter_setsockopt(struct sock *sk,
+				       int *level,
+				       int *optname,
+				       char __user *optval,
+				       int *optlen,
+				       char **kernel_optval)
+{
+	struct cgroup *cgrp;
+	struct bpf_sockopt_kern ctx;
+	u8 buf[BPF_SOCKOPT_BUF_SIZE];
+	int max_len;
+	int ret;
+
+	if (!sk || !sk_fullsock(sk))
+		return 0;
+
+	cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	if (!cgrp || !cgrp->bpf.effective[BPF_CGROUP_SETSOCKOPT])
+		return 0;
+
+	max_len = min_t(int, *optlen, sizeof(buf));
+	if (max_len > 0) {
+		if (copy_from_user(buf, optval, max_len))
+			return -EFAULT;
+	} else {
+		memset(buf, 0, sizeof(buf));
+	}
+
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.sk = sk;
+	ctx.optval = buf;
+	ctx.optval_end = buf + max_len;
+	ctx.level = *level;
+	ctx.optname = *optname;
+	ctx.optlen = *optlen;
+	ctx.retval = 0;
+
+	ret = BPF_PROG_RUN_ARRAY(cgrp->bpf.effective[BPF_CGROUP_SETSOCKOPT], &ctx, BPF_PROG_RUN);
+	if (ret == 0)
+		return ctx.retval < 0 ? ctx.retval : -EPERM;
+
+	if (ctx.optlen == -1) {
+		/* Option handled by BPF - bypass kernel handling and return success */
+		return 1;
+	}
+
+	*level = ctx.level;
+	*optname = ctx.optname;
+	*optlen = ctx.optlen;
+
+	return 0;
+}
+EXPORT_SYMBOL(__cgroup_bpf_run_filter_setsockopt);
+
+int __cgroup_bpf_run_filter_getsockopt(struct sock *sk,
+				       int level,
+				       int optname,
+				       char __user *optval,
+				       int __user *optlen,
+				       int max_optlen,
+				       int retval)
+{
+	struct cgroup *cgrp;
+	struct bpf_sockopt_kern ctx;
+	u8 buf[BPF_SOCKOPT_BUF_SIZE];
+	int orig_optlen = max_optlen;
+	int len = min_t(int, orig_optlen, sizeof(buf));
+	int ret;
+
+	if (!sk || !sk_fullsock(sk))
+		return retval;
+
+	cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	if (!cgrp || !cgrp->bpf.effective[BPF_CGROUP_GETSOCKOPT])
+		return retval;
+
+	if (len > 0 && optval) {
+		if (copy_from_user(buf, optval, len))
+			return -EFAULT;
+	} else {
+		memset(buf, 0, sizeof(buf));
+	}
+
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.sk = sk;
+	ctx.optval = buf;
+	ctx.optval_end = buf + sizeof(buf);
+	ctx.level = level;
+	ctx.optname = optname;
+	ctx.optlen = orig_optlen;
+	ctx.retval = retval;
+
+	ret = BPF_PROG_RUN_ARRAY(cgrp->bpf.effective[BPF_CGROUP_GETSOCKOPT], &ctx, BPF_PROG_RUN);
+	if (ret == 0)
+		return ctx.retval < 0 ? ctx.retval : -EPERM;
+
+	if (ctx.optlen > 0 && optval) {
+		int copy_len = min_t(int, ctx.optlen, orig_optlen);
+		copy_len = min_t(int, copy_len, sizeof(buf));
+		if (copy_to_user(optval, buf, copy_len))
+			return -EFAULT;
+		if (put_user(ctx.optlen, optlen))
+			return -EFAULT;
+	}
+
+	return ctx.retval;
+}
+EXPORT_SYMBOL(__cgroup_bpf_run_filter_getsockopt);

@@ -3056,29 +3056,6 @@ static bool sock_filter_is_valid_access(int off, int size,
 	return true;
 }
 
-static bool compat_ctx_is_valid_access(int off, int size,
-				       enum bpf_access_type type,
-				       enum bpf_reg_type *reg_type,
-				       int ctx_size)
-{
-	if (off < 0 || off + size > ctx_size)
-		return false;
-
-	/* The verifier guarantees that size > 0. */
-	if (off % size != 0)
-		return false;
-
-	switch (size) {
-	case sizeof(__u8):
-	case sizeof(__u16):
-	case sizeof(__u32):
-	case sizeof(__u64):
-		return true;
-	default:
-		return false;
-	}
-}
-
 static bool sock_addr_filter_is_valid_access(int off, int size,
 					     enum bpf_access_type type,
 					     enum bpf_reg_type *reg_type)
@@ -3141,8 +3118,50 @@ static bool sockopt_filter_is_valid_access(int off, int size,
 					   enum bpf_access_type type,
 					   enum bpf_reg_type *reg_type)
 {
-	return compat_ctx_is_valid_access(off, size, type, reg_type,
-					  sizeof(struct bpf_sockopt));
+	if (off < 0 || off + size > sizeof(struct bpf_sockopt))
+		return false;
+
+	if (off % size != 0)
+		return false;
+
+	if (type == BPF_WRITE) {
+		switch (off) {
+		case offsetof(struct bpf_sockopt, optlen):
+		case offsetof(struct bpf_sockopt, retval):
+			break;
+		default:
+			return false;
+		}
+	}
+
+	switch (off) {
+	case offsetof(struct bpf_sockopt, sk):
+		if (type != BPF_READ || size != sizeof(__u64))
+			return false;
+		*reg_type = PTR_TO_SOCKET;
+		break;
+	case offsetof(struct bpf_sockopt, optval):
+		if (type != BPF_READ || size != sizeof(__u64))
+			return false;
+		*reg_type = PTR_TO_PACKET;
+		break;
+	case offsetof(struct bpf_sockopt, optval_end):
+		if (type != BPF_READ || size != sizeof(__u64))
+			return false;
+		*reg_type = PTR_TO_PACKET_END;
+		break;
+	case offsetof(struct bpf_sockopt, level):
+	case offsetof(struct bpf_sockopt, optname):
+	case offsetof(struct bpf_sockopt, optlen):
+	case offsetof(struct bpf_sockopt, retval):
+		if (size != sizeof(__s32))
+			return false;
+		break;
+	default:
+		return false;
+	}
+
+	return true;
 }
 
 static int tc_cls_act_prologue(struct bpf_insn *insn_buf, bool direct_write,
@@ -3594,18 +3613,67 @@ static u32 sock_addr_filter_convert_ctx_access(enum bpf_access_type type,
 	return insn - insn_buf;
 }
 
-static u32 compat_sock_filter_convert_ctx_access(enum bpf_access_type type,
-						 int dst_reg, int src_reg,
-						 int ctx_off,
-						 struct bpf_insn *insn_buf,
-						 struct bpf_prog *prog)
+static u32 sockopt_filter_convert_ctx_access(enum bpf_access_type type,
+					     int dst_reg, int src_reg,
+					     int ctx_off,
+					     struct bpf_insn *insn_buf,
+					     struct bpf_prog *prog)
 {
 	struct bpf_insn *insn = insn_buf;
 
-	if (type == BPF_WRITE)
-		*insn++ = BPF_MOV64_REG(src_reg, src_reg);
-	else
-		*insn++ = BPF_MOV64_IMM(dst_reg, 0);
+	switch (ctx_off) {
+	case offsetof(struct bpf_sockopt, sk):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, sk),
+				      dst_reg, src_reg,
+				      offsetof(struct bpf_sockopt_kern, sk));
+		break;
+
+	case offsetof(struct bpf_sockopt, optval):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, optval),
+				      dst_reg, src_reg,
+				      offsetof(struct bpf_sockopt_kern, optval));
+		break;
+
+	case offsetof(struct bpf_sockopt, optval_end):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, optval_end),
+				      dst_reg, src_reg,
+				      offsetof(struct bpf_sockopt_kern, optval_end));
+		break;
+
+	case offsetof(struct bpf_sockopt, level):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, level),
+				      dst_reg, src_reg,
+				      offsetof(struct bpf_sockopt_kern, level));
+		break;
+
+	case offsetof(struct bpf_sockopt, optname):
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, optname),
+				      dst_reg, src_reg,
+				      offsetof(struct bpf_sockopt_kern, optname));
+		break;
+
+	case offsetof(struct bpf_sockopt, optlen):
+		if (type == BPF_WRITE)
+			*insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, optlen),
+					      dst_reg, src_reg,
+					      offsetof(struct bpf_sockopt_kern, optlen));
+		else
+			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, optlen),
+					      dst_reg, src_reg,
+					      offsetof(struct bpf_sockopt_kern, optlen));
+		break;
+
+	case offsetof(struct bpf_sockopt, retval):
+		if (type == BPF_WRITE)
+			*insn++ = BPF_STX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, retval),
+					      dst_reg, src_reg,
+					      offsetof(struct bpf_sockopt_kern, retval));
+		else
+			*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, retval),
+					      dst_reg, src_reg,
+					      offsetof(struct bpf_sockopt_kern, retval));
+		break;
+	}
 
 	return insn - insn_buf;
 }
@@ -3727,6 +3795,8 @@ cg_sockopt_func_proto(enum bpf_func_id func_id)
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:
 		return &bpf_sk_storage_delete_proto;
+	case BPF_FUNC_get_current_pid_tgid:
+		return &bpf_get_current_pid_tgid_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}
@@ -3747,7 +3817,7 @@ static const struct bpf_verifier_ops cg_sock_addr_ops = {
 static const struct bpf_verifier_ops cg_sockopt_ops = {
 	.get_func_proto		= cg_sockopt_func_proto,
 	.is_valid_access	= sockopt_filter_is_valid_access,
-	.convert_ctx_access	= compat_sock_filter_convert_ctx_access,
+	.convert_ctx_access	= sockopt_filter_convert_ctx_access,
 };
 
 static struct bpf_prog_type_list sk_filter_type __read_mostly = {

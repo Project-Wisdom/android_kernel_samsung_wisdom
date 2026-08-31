@@ -528,9 +528,18 @@ int __cgroup_bpf_run_filter_setsockopt(struct sock *sk,
 		return 1;
 	}
 
-	*level = ctx.level;
-	*optname = ctx.optname;
-	*optlen = ctx.optlen;
+	if (ctx.optlen < -1 || ctx.optlen > max_len)
+		return -EFAULT;
+
+	if (ctx.optlen > 0) {
+		*kernel_optval = kmemdup(buf, ctx.optlen, GFP_KERNEL);
+		if (!*kernel_optval)
+			return -ENOMEM;
+		*level = ctx.level;
+		*optname = ctx.optname;
+		*optlen = ctx.optlen;
+	}
+	/* If ctx.optlen == 0, keep original *level, *optname, *optlen and *kernel_optval = NULL */
 
 	return 0;
 }
@@ -548,7 +557,8 @@ int __cgroup_bpf_run_filter_getsockopt(struct sock *sk,
 	struct bpf_sockopt_kern ctx;
 	u8 buf[BPF_SOCKOPT_BUF_SIZE];
 	int orig_optlen = max_optlen;
-	int len = min_t(int, orig_optlen, sizeof(buf));
+	int actual_optlen = 0;
+	int visible_len;
 	int ret;
 
 	if (!sk || !sk_fullsock(sk))
@@ -558,8 +568,20 @@ int __cgroup_bpf_run_filter_getsockopt(struct sock *sk,
 	if (!cgrp || !cgrp->bpf.effective[BPF_CGROUP_GETSOCKOPT])
 		return retval;
 
-	if (len > 0 && optval) {
-		if (copy_from_user(buf, optval, len))
+	visible_len = max(0, min_t(int, orig_optlen, (int)sizeof(buf)));
+
+	if (retval >= 0 && optlen && !get_user(actual_optlen, optlen)) {
+		/* Kernel getsockopt succeeded - load actual output bytes */
+		int copy_in = min_t(int, actual_optlen, sizeof(buf));
+		if (copy_in > 0 && optval) {
+			if (copy_from_user(buf, optval, copy_in))
+				return -EFAULT;
+		} else {
+			memset(buf, 0, sizeof(buf));
+		}
+		orig_optlen = actual_optlen;
+	} else if (visible_len > 0 && optval) {
+		if (copy_from_user(buf, optval, visible_len))
 			return -EFAULT;
 	} else {
 		memset(buf, 0, sizeof(buf));
@@ -568,7 +590,7 @@ int __cgroup_bpf_run_filter_getsockopt(struct sock *sk,
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.sk = sk;
 	ctx.optval = buf;
-	ctx.optval_end = buf + sizeof(buf);
+	ctx.optval_end = buf + visible_len;
 	ctx.level = level;
 	ctx.optname = optname;
 	ctx.optlen = orig_optlen;
@@ -576,10 +598,10 @@ int __cgroup_bpf_run_filter_getsockopt(struct sock *sk,
 
 	ret = BPF_PROG_RUN_ARRAY(cgrp->bpf.effective[BPF_CGROUP_GETSOCKOPT], &ctx, BPF_PROG_RUN);
 	if (ret == 0)
-		return ctx.retval < 0 ? ctx.retval : -EPERM;
+		return -EPERM;
 
 	if (ctx.optlen > 0 && optval) {
-		int copy_len = min_t(int, ctx.optlen, orig_optlen);
+		int copy_len = min_t(int, ctx.optlen, max_optlen);
 		copy_len = min_t(int, copy_len, sizeof(buf));
 		if (copy_to_user(optval, buf, copy_len))
 			return -EFAULT;

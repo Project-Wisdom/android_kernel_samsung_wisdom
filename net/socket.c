@@ -1756,26 +1756,42 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock != NULL) {
+		char *kernel_optval = NULL;
+
 		err = security_socket_setsockopt(sock, level, optname);
 		if (err)
 			goto out_put;
 
 		err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
-						    optval, &optlen, NULL);
+						    optval, &optlen, &kernel_optval);
 		if (err) {
 			if (err > 0)
 				err = 0;
 			goto out_put;
 		}
 
-		if (level == SOL_SOCKET)
-			err =
-			    sock_setsockopt(sock, level, optname, optval,
-					    optlen);
-		else
-			err =
-			    sock->ops->setsockopt(sock, level, optname, optval,
-						  optlen);
+		if (kernel_optval) {
+			mm_segment_t old_fs = get_fs();
+
+			set_fs(KERNEL_DS);
+			if (level == SOL_SOCKET)
+				err = sock_setsockopt(sock, level, optname,
+						      (char __user *)kernel_optval,
+						      optlen);
+			else
+				err = sock->ops->setsockopt(sock, level, optname,
+							    (char __user *)kernel_optval,
+							    optlen);
+			set_fs(old_fs);
+			kfree(kernel_optval);
+		} else {
+			if (level == SOL_SOCKET)
+				err = sock_setsockopt(sock, level, optname,
+						      optval, optlen);
+			else
+				err = sock->ops->setsockopt(sock, level, optname,
+							    optval, optlen);
+		}
 out_put:
 		fput_light(sock->file, fput_needed);
 	}

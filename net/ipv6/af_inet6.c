@@ -308,8 +308,15 @@ int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		return -EINVAL;
 
 	snum = ntohs(addr->sin6_port);
-	if (snum && snum < PROT_SOCK && !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
-		return -EACCES;
+	{
+		int flags = BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr);
+		if (flags < 0)
+			return -EPERM;
+		if (snum && snum < PROT_SOCK &&
+		    !(flags & BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE) &&
+		    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
+			return -EACCES;
+	}
 
 	lock_sock(sk);
 

@@ -506,6 +506,16 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	    !ns_capable(net->user_ns, CAP_NET_BIND_SERVICE))
 		goto out;
 
+	{
+		int flags = BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr);
+		if (flags < 0) {
+			err = -EPERM;
+			goto out;
+		}
+		if (flags & BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE)
+			err = 0;
+	}
+
 	/*      We keep a pair of addresses. rcv_saddr is the one
 	 *      used by hash lookups, and saddr is used for transmit.
 	 *
@@ -557,6 +567,14 @@ int inet_dgram_connect(struct socket *sock, struct sockaddr *uaddr,
 		return -EINVAL;
 	if (uaddr->sa_family == AF_UNSPEC)
 		return sk->sk_prot->disconnect(sk, flags);
+
+	if (sk->sk_family == AF_INET6) {
+		if (BPF_CGROUP_RUN_PROG_INET6_CONNECT(sk, uaddr))
+			return -EPERM;
+	} else {
+		if (BPF_CGROUP_RUN_PROG_INET4_CONNECT(sk, uaddr))
+			return -EPERM;
+	}
 
 	if (!inet_sk(sk)->inet_num && inet_autobind(sk))
 		return -EAGAIN;
@@ -623,6 +641,13 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	case SS_UNCONNECTED:
 		err = -EISCONN;
 		if (sk->sk_state != TCP_CLOSE)
+			goto out;
+
+		if (sk->sk_family == AF_INET6)
+			err = BPF_CGROUP_RUN_PROG_INET6_CONNECT(sk, uaddr);
+		else
+			err = BPF_CGROUP_RUN_PROG_INET4_CONNECT(sk, uaddr);
+		if (err)
 			goto out;
 
 		err = sk->sk_prot->connect(sk, uaddr, addr_len);

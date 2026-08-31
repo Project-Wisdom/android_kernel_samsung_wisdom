@@ -450,6 +450,7 @@ try_again:
 						    inet6_iif(skb));
 		}
 		*addr_len = sizeof(*sin6);
+		BPF_CGROUP_RUN_PROG_UDP6_RECVMSG(sk, (struct sockaddr *)sin6);
 	}
 
 	if (np->rxopt.all)
@@ -1133,6 +1134,9 @@ int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		case AF_INET6:
 			if (addr_len < SIN6_LEN_RFC2133)
 				return -EINVAL;
+			err = BPF_CGROUP_RUN_PROG_UDP6_SENDMSG(sk, (struct sockaddr *)sin6);
+			if (err)
+				return err;
 			daddr = &sin6->sin6_addr;
 			if (ipv6_addr_any(daddr) &&
 			    ipv6_addr_v4mapped(&np->saddr))

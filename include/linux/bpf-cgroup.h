@@ -92,12 +92,115 @@ int __cgroup_bpf_run_filter_sk(struct sock *sk,
 	__ret;								       \
 })
 
+#define BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE (1 << 0)
+
+struct bpf_sock_addr_kern {
+	struct sock *sk;
+	struct sockaddr *uaddr;
+	u32 flags;
+};
+
+int __cgroup_bpf_run_filter_sock_addr(struct sock *sk,
+				      struct sockaddr *uaddr,
+				      enum bpf_attach_type type,
+				      u32 *flags);
+
 #define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk)			       \
 ({									       \
 	int __ret = 0;							       \
 	if (cgroup_bpf_enabled && sk) {					       \
 		__ret = __cgroup_bpf_run_filter_sk(sk,			       \
 						 BPF_CGROUP_INET_SOCK_RELEASE); \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr)			       \
+({									       \
+	u32 __flags = 0;						       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						       BPF_CGROUP_INET4_BIND,  \
+						       &__flags);	       \
+	}								       \
+	__ret ? __ret : __flags;					       \
+})
+
+#define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr)			       \
+({									       \
+	u32 __flags = 0;						       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						       BPF_CGROUP_INET6_BIND,  \
+						       &__flags);	       \
+	}								       \
+	__ret ? __ret : __flags;					       \
+})
+
+#define BPF_CGROUP_RUN_PROG_INET4_CONNECT(sk, uaddr)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						     BPF_CGROUP_INET4_CONNECT, \
+						     NULL);		       \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_INET6_CONNECT(sk, uaddr)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						     BPF_CGROUP_INET6_CONNECT, \
+						     NULL);		       \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_UDP4_SENDMSG(sk, uaddr)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						     BPF_CGROUP_UDP4_SENDMSG,  \
+						     NULL);		       \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_UDP6_SENDMSG(sk, uaddr)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						     BPF_CGROUP_UDP6_SENDMSG,  \
+						     NULL);		       \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_UDP4_RECVMSG(sk, uaddr)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						     BPF_CGROUP_UDP4_RECVMSG,  \
+						     NULL);		       \
+	}								       \
+	__ret;								       \
+})
+
+#define BPF_CGROUP_RUN_PROG_UDP6_RECVMSG(sk, uaddr)			       \
+({									       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled && sk) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr,	       \
+						     BPF_CGROUP_UDP6_RECVMSG,  \
+						     NULL);		       \
 	}								       \
 	__ret;								       \
 })
@@ -112,6 +215,14 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET4_CONNECT(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET6_CONNECT(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_UDP4_SENDMSG(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_UDP6_SENDMSG(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_UDP4_RECVMSG(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_UDP6_RECVMSG(sk, uaddr) ({ 0; })
 
 #endif /* CONFIG_CGROUP_BPF */
 

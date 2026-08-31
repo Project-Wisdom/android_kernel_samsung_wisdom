@@ -448,3 +448,33 @@ int __cgroup_bpf_run_filter_sk(struct sock *sk,
 	return ret == 1 ? 0 : -EPERM;
 }
 EXPORT_SYMBOL(__cgroup_bpf_run_filter_sk);
+
+int __cgroup_bpf_run_filter_sock_addr(struct sock *sk,
+				      struct sockaddr *uaddr,
+				      enum bpf_attach_type type,
+				      u32 *flags)
+{
+	struct bpf_sock_addr_kern ctx = {
+		.sk = sk,
+		.uaddr = uaddr,
+		.flags = 0,
+	};
+	struct cgroup *cgrp;
+	int ret;
+
+	if (!sk || !sk_fullsock(sk))
+		return 0;
+
+	cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	ret = BPF_PROG_RUN_ARRAY(cgrp->bpf.effective[type], &ctx, BPF_PROG_RUN);
+	if (ret == 0)
+		return -EPERM;
+
+	if (flags) {
+		if (ret & (1 << 1))
+			*flags |= BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(__cgroup_bpf_run_filter_sock_addr);

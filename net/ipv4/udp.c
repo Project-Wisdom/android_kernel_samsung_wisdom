@@ -978,6 +978,10 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 				return -EAFNOSUPPORT;
 		}
 
+		err = BPF_CGROUP_RUN_PROG_UDP4_SENDMSG(sk, (struct sockaddr *)usin);
+		if (err)
+			return err;
+
 		daddr = usin->sin_addr.s_addr;
 		dport = usin->sin_port;
 		if (dport == 0)
@@ -1379,6 +1383,7 @@ try_again:
 		sin->sin_addr.s_addr = ip_hdr(skb)->saddr;
 		memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
 		*addr_len = sizeof(*sin);
+		BPF_CGROUP_RUN_PROG_UDP4_RECVMSG(sk, (struct sockaddr *)sin);
 	}
 	if (inet->cmsg_flags)
 		ip_cmsg_recv_offset(msg, skb, sizeof(struct udphdr), off);

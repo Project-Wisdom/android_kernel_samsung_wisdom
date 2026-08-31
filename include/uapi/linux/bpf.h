@@ -816,6 +816,9 @@ enum bpf_func_id {
 	BPF_FUNC_skb_get_xfrm_state,
 	BPF_FUNC_get_stack,
 	BPF_FUNC_skb_load_bytes_relative,
+	BPF_FUNC_sk_lookup_tcp = 84,
+	BPF_FUNC_sk_lookup_udp = 85,
+	BPF_FUNC_sk_release = 86,
 	BPF_FUNC_sk_fullsock = 95,
 	BPF_FUNC_tcp_sock = 96,
 	BPF_FUNC_sk_storage_get = 107,
@@ -898,6 +901,9 @@ enum {
 /* BPF_FUNC_sk_storage_get flags */
 #define BPF_SK_STORAGE_GET_F_CREATE	(1ULL << 0)
 
+/* BPF_FUNC_sk_lookup_tcp and BPF_FUNC_sk_lookup_udp flags. */
+#define BPF_F_CURRENT_NETNS		(-1L)
+
 /* user accessible mirror of in-kernel sk_buff.
  * new fields can only be added to the end of this structure
  */
@@ -979,6 +985,24 @@ struct bpf_sockopt {
 	__s32 optname;
 	__s32 optlen;
 	__s32 retval;
+};
+
+struct bpf_sock_tuple {
+	union {
+		struct {
+			__be32 saddr;
+			__be32 daddr;
+			__be16 sport;
+			__be16 dport;
+		} ipv4;
+
+		struct {
+			__be32 saddr[4];
+			__be32 daddr[4];
+			__be16 sport;
+			__be16 dport;
+		} ipv6;
+	};
 };
 
 /* User return codes for XDP prog type.

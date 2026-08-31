@@ -642,6 +642,49 @@ static void invalidate_alloc_mem_refs(struct bpf_verifier_state *state, u32 id)
 	}
 }
 
+static bool is_acquire_function(int func_id)
+{
+	return func_id == BPF_FUNC_sk_lookup_tcp ||
+	       func_id == BPF_FUNC_sk_lookup_udp;
+}
+
+static void invalidate_sock_refs(struct bpf_verifier_state *state, u32 id)
+{
+	int i;
+
+	for (i = 0; i < MAX_BPF_REG; i++) {
+		if ((state->regs[i].type == PTR_TO_SOCKET ||
+		     state->regs[i].type == PTR_TO_SOCKET_OR_NULL ||
+		     state->regs[i].type == PTR_TO_SOCK_COMMON ||
+		     state->regs[i].type == PTR_TO_SOCK_COMMON_OR_NULL) &&
+		    state->regs[i].id == id) {
+			state->regs[i].type = NOT_INIT;
+			state->regs[i].id = 0;
+			state->regs[i].imm = 0;
+		}
+	}
+
+	for (i = 0; i < MAX_BPF_STACK; i += BPF_REG_SIZE) {
+		if (state->stack_slot_type[i] == STACK_SPILL) {
+			struct bpf_reg_state *sp = &state->spilled_regs[i / BPF_REG_SIZE];
+
+			if ((sp->type == PTR_TO_SOCKET ||
+			     sp->type == PTR_TO_SOCKET_OR_NULL ||
+			     sp->type == PTR_TO_SOCK_COMMON ||
+			     sp->type == PTR_TO_SOCK_COMMON_OR_NULL) &&
+			    sp->id == id) {
+				int k;
+
+				for (k = 0; k < BPF_REG_SIZE; k++)
+					state->stack_slot_type[i + k] = STACK_INVALID;
+				sp->type = NOT_INIT;
+				sp->id = 0;
+				sp->imm = 0;
+			}
+		}
+	}
+}
+
 /* check_stack_read/write functions track spill/fill of registers,
  * stack boundary and alignment are checked in check_mem_access()
  */
@@ -1566,6 +1609,16 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 		invalidate_alloc_mem_refs(&env->cur_state, ref_id);
 	}
 
+	if (func_id == BPF_FUNC_sk_release) {
+		u32 ref_id = regs[BPF_REG_1].id;
+
+		if (!ref_id || !remove_ref_from_state(&env->cur_state, ref_id)) {
+			verbose("R1 is not an acquired socket reference or already released\n");
+			return -EINVAL;
+		}
+		invalidate_sock_refs(&env->cur_state, ref_id);
+	}
+
 	/* reset caller saved regs */
 	for (i = 0; i < CALLER_SAVED_REGS; i++) {
 		reg = regs + caller_saved[i];
@@ -1592,9 +1645,17 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 		regs[BPF_REG_0].map_ptr = meta.map_ptr;
 		regs[BPF_REG_0].id = ++env->id_gen;
 	} else if (fn->ret_type == RET_PTR_TO_SOCKET_OR_NULL) {
+		u32 id = ++env->id_gen;
+
+		if (is_acquire_function(func_id)) {
+			if (!acquire_ref(&env->cur_state, id)) {
+				verbose("Too many concurrent references\n");
+				return -E2BIG;
+			}
+		}
 		regs[BPF_REG_0].type = PTR_TO_SOCKET_OR_NULL;
 		regs[BPF_REG_0].max_value = regs[BPF_REG_0].min_value = 0;
-		regs[BPF_REG_0].id = ++env->id_gen;
+		regs[BPF_REG_0].id = id;
 	} else if (fn->ret_type == RET_PTR_TO_ALLOC_MEM_OR_NULL) {
 		u32 id = ++env->id_gen;
 
@@ -2493,11 +2554,11 @@ static void mark_map_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 	    reg->id == id) {
 		if (type == PTR_TO_MAP_VALUE && reg->type == PTR_TO_SOCKET_OR_NULL) {
 			reg->type = PTR_TO_SOCKET;
-			reg->id = 0;
+			/* Preserve reg->id for socket release tracking */
 		} else if (type == PTR_TO_MAP_VALUE &&
 			   reg->type == PTR_TO_SOCK_COMMON_OR_NULL) {
 			reg->type = PTR_TO_SOCK_COMMON;
-			reg->id = 0;
+			/* Preserve reg->id for socket release tracking */
 		} else if (type == PTR_TO_MAP_VALUE &&
 			   reg->type == PTR_TO_MEM_OR_NULL) {
 			reg->type = PTR_TO_MEM;
@@ -2623,7 +2684,9 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	     dst_reg->type == PTR_TO_MEM_OR_NULL)) {
 		u32 null_ref_id = 0;
 
-		if (dst_reg->type == PTR_TO_MEM_OR_NULL)
+		if (dst_reg->type == PTR_TO_MEM_OR_NULL ||
+		    dst_reg->type == PTR_TO_SOCKET_OR_NULL ||
+		    dst_reg->type == PTR_TO_SOCK_COMMON_OR_NULL)
 			null_ref_id = dst_reg->id;
 
 		/* Mark all identical registers in each branch as either

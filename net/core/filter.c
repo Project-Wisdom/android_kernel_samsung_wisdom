@@ -53,6 +53,12 @@
 #include <net/dst.h>
 #include <net/sock_reuseport.h>
 #include <net/bpf_sk_storage.h>
+#include <net/tcp.h>
+#include <net/inet_hashtables.h>
+#include <net/udp.h>
+#if IS_ENABLED(CONFIG_IPV6)
+#include <net/inet6_hashtables.h>
+#endif
 
 /**
  *	sk_filter_trim_cap - run a packet through a socket filter
@@ -2808,6 +2814,153 @@ xdp_func_proto(enum bpf_func_id func_id)
 	}
 }
 
+static struct net *bpf_sk_lookup_get_net(const struct sk_buff *skb, u64 netns_id, bool *has_net_ref)
+{
+	struct net *caller_net = NULL;
+
+	if (skb->dev)
+		caller_net = dev_net(skb->dev);
+	else if (skb_dst(skb) && skb_dst(skb)->dev)
+		caller_net = dev_net(skb_dst(skb)->dev);
+	else if (skb->sk)
+		caller_net = sock_net(skb->sk);
+
+	if (!caller_net)
+		return NULL;
+
+	if (netns_id == (u64)BPF_F_CURRENT_NETNS || (s32)netns_id == -1) {
+		*has_net_ref = false;
+		return caller_net;
+	}
+
+	if (netns_id > S32_MAX)
+		return NULL;
+
+	*has_net_ref = true;
+	return get_net_ns_by_id(caller_net, (int)netns_id);
+}
+
+static struct sock *
+__bpf_sk_lookup(const struct sk_buff *skb, struct bpf_sock_tuple *tuple, u32 len,
+		u8 proto, u64 netns_id, u64 flags)
+{
+	struct sock *sk = NULL;
+	bool has_net_ref = false;
+	struct net *net;
+	int dif;
+
+	if (flags != 0)
+		return NULL;
+
+	if (len != sizeof(tuple->ipv4) && len != sizeof(tuple->ipv6))
+		return NULL;
+
+	net = bpf_sk_lookup_get_net(skb, netns_id, &has_net_ref);
+	if (!net)
+		return NULL;
+
+	dif = skb->dev ? skb->dev->ifindex : 0;
+
+	if (len == sizeof(tuple->ipv4)) {
+		if (proto == IPPROTO_TCP) {
+			sk = inet_lookup(net, &tcp_hashinfo, (struct sk_buff *)skb, 0,
+					 tuple->ipv4.saddr, tuple->ipv4.sport,
+					 tuple->ipv4.daddr, tuple->ipv4.dport,
+					 dif);
+		} else if (proto == IPPROTO_UDP) {
+			rcu_read_lock();
+			sk = __udp4_lib_lookup(net, tuple->ipv4.saddr, tuple->ipv4.sport,
+					       tuple->ipv4.daddr, tuple->ipv4.dport,
+					       dif, &udp_table, NULL);
+			if (sk && !atomic_inc_not_zero(&sk->sk_refcnt))
+				sk = NULL;
+			rcu_read_unlock();
+		}
+#if IS_ENABLED(CONFIG_IPV6)
+	} else if (len == sizeof(tuple->ipv6)) {
+		if (proto == IPPROTO_TCP) {
+			sk = inet6_lookup(net, &tcp_hashinfo, (struct sk_buff *)skb, 0,
+					  (const struct in6_addr *)&tuple->ipv6.saddr,
+					  tuple->ipv6.sport,
+					  (const struct in6_addr *)&tuple->ipv6.daddr,
+					  tuple->ipv6.dport,
+					  dif);
+		} else if (proto == IPPROTO_UDP) {
+			rcu_read_lock();
+			sk = __udp6_lib_lookup(net,
+					       (const struct in6_addr *)&tuple->ipv6.saddr,
+					       tuple->ipv6.sport,
+					       (const struct in6_addr *)&tuple->ipv6.daddr,
+					       tuple->ipv6.dport,
+					       dif, &udp_table, NULL);
+			if (sk && !atomic_inc_not_zero(&sk->sk_refcnt))
+				sk = NULL;
+			rcu_read_unlock();
+		}
+#endif
+	}
+
+	if (has_net_ref)
+		put_net(net);
+
+	if (sk && !sk_fullsock(sk)) {
+		sock_gen_put(sk);
+		return NULL;
+	}
+
+	return sk;
+}
+
+BPF_CALL_5(bpf_sk_lookup_tcp, struct sk_buff *, skb, struct bpf_sock_tuple *, tuple,
+	   u32, len, u64, netns_id, u64, flags)
+{
+	return (unsigned long)__bpf_sk_lookup(skb, tuple, len, IPPROTO_TCP, netns_id, flags);
+}
+
+static const struct bpf_func_proto bpf_sk_lookup_tcp_proto = {
+	.func		= bpf_sk_lookup_tcp,
+	.gpl_only	= false,
+	.pkt_access	= true,
+	.ret_type	= RET_PTR_TO_SOCKET_OR_NULL,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type	= ARG_PTR_TO_MEM,
+	.arg3_type	= ARG_CONST_SIZE,
+	.arg4_type	= ARG_ANYTHING,
+	.arg5_type	= ARG_ANYTHING,
+};
+
+BPF_CALL_5(bpf_sk_lookup_udp, struct sk_buff *, skb, struct bpf_sock_tuple *, tuple,
+	   u32, len, u64, netns_id, u64, flags)
+{
+	return (unsigned long)__bpf_sk_lookup(skb, tuple, len, IPPROTO_UDP, netns_id, flags);
+}
+
+static const struct bpf_func_proto bpf_sk_lookup_udp_proto = {
+	.func		= bpf_sk_lookup_udp,
+	.gpl_only	= false,
+	.pkt_access	= true,
+	.ret_type	= RET_PTR_TO_SOCKET_OR_NULL,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type	= ARG_PTR_TO_MEM,
+	.arg3_type	= ARG_CONST_SIZE,
+	.arg4_type	= ARG_ANYTHING,
+	.arg5_type	= ARG_ANYTHING,
+};
+
+BPF_CALL_1(bpf_sk_release, struct sock *, sk)
+{
+	if (sk)
+		sock_gen_put(sk);
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_sk_release_proto = {
+	.func		= bpf_sk_release,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_SOCKET,
+};
+
 static const struct bpf_func_proto *
 cg_skb_func_proto(enum bpf_func_id func_id)
 {
@@ -2822,6 +2975,12 @@ cg_skb_func_proto(enum bpf_func_id func_id)
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:
 		return &bpf_sk_storage_delete_proto;
+	case BPF_FUNC_sk_lookup_tcp:
+		return &bpf_sk_lookup_tcp_proto;
+	case BPF_FUNC_sk_lookup_udp:
+		return &bpf_sk_lookup_udp_proto;
+	case BPF_FUNC_sk_release:
+		return &bpf_sk_release_proto;
 	default:
 		return sk_filter_func_proto(func_id);
 	}

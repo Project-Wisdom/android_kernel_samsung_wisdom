@@ -15,9 +15,19 @@
 #include <linux/mm.h>
 #include <linux/filter.h>
 #include <linux/perf_event.h>
+#include <linux/vmalloc.h>
 
 #define ARRAY_CREATE_FLAG_MASK \
-	(BPF_F_RDONLY | BPF_F_WRONLY)
+	(BPF_F_RDONLY | BPF_F_WRONLY | BPF_F_MMAPABLE)
+
+static inline void *array_map_elem_ptr(struct bpf_array *array, u32 index)
+{
+	if (array->map.map_flags & BPF_F_MMAPABLE) {
+		u32 offset = PAGE_ALIGN(sizeof(*array));
+		return (char *)array + offset + (u64)array->elem_size * index;
+	}
+	return array->value + (u64)array->elem_size * index;
+}
 
 static void bpf_array_free_percpu(struct bpf_array *array)
 {
@@ -64,6 +74,11 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	    attr->map_flags & ~ARRAY_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
+	if (attr->map_flags & BPF_F_MMAPABLE) {
+		if (percpu || attr->map_type != BPF_MAP_TYPE_ARRAY)
+			return ERR_PTR(-EINVAL);
+	}
+
 	if (attr->value_size >= 1 << (KMALLOC_SHIFT_MAX - 1))
 		/* if value_size is bigger, the user space won't be able to
 		 * access the elements.
@@ -93,11 +108,16 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 			return ERR_PTR(-E2BIG);
 	}
 
-	array_size = sizeof(*array);
-	if (percpu)
-		array_size += (u64) max_entries * sizeof(void *);
-	else
-		array_size += (u64) max_entries * elem_size;
+	if (attr->map_flags & BPF_F_MMAPABLE) {
+		array_size = PAGE_ALIGN(sizeof(*array)) +
+			     PAGE_ALIGN((u64)max_entries * elem_size);
+	} else {
+		array_size = sizeof(*array);
+		if (percpu)
+			array_size += (u64) max_entries * sizeof(void *);
+		else
+			array_size += (u64) max_entries * elem_size;
+	}
 
 	/* make sure there is no u32 overflow later in round_up() */
 	cost = array_size;
@@ -115,9 +135,15 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 		return ERR_PTR(ret);
 
 	/* allocate all map elements and zero-initialize them */
-	array = bpf_map_area_alloc(array_size);
-	if (!array)
-		return ERR_PTR(-ENOMEM);
+	if (attr->map_flags & BPF_F_MMAPABLE) {
+		array = vmalloc_user(array_size);
+		if (!array)
+			return ERR_PTR(-ENOMEM);
+	} else {
+		array = bpf_map_area_alloc(array_size);
+		if (!array)
+			return ERR_PTR(-ENOMEM);
+	}
 	array->index_mask = index_mask;
 	array->map.unpriv_array = unpriv;
 
@@ -149,7 +175,7 @@ static void *array_map_lookup_elem(struct bpf_map *map, void *key)
 	if (unlikely(index >= array->map.max_entries))
 		return NULL;
 
-	return array->value + array->elem_size * (index & array->index_mask);
+	return array_map_elem_ptr(array, index & array->index_mask);
 }
 
 /* Called from eBPF program */
@@ -232,8 +258,7 @@ static int array_map_update_elem(struct bpf_map *map, void *key, void *value,
 		memcpy(this_cpu_ptr(array->pptrs[index & array->index_mask]),
 		       value, map->value_size);
 	else
-		memcpy(array->value +
-		       array->elem_size * (index & array->index_mask),
+		memcpy(array_map_elem_ptr(array, index & array->index_mask),
 		       value, map->value_size);
 	return 0;
 }
@@ -297,7 +322,30 @@ static void array_map_free(struct bpf_map *map)
 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
 		bpf_array_free_percpu(array);
 
-	bpf_map_area_free(array);
+	if (array->map.map_flags & BPF_F_MMAPABLE)
+		vfree(array);
+	else
+		bpf_map_area_free(array);
+}
+
+static int array_map_mmap(struct bpf_map *map, struct vm_area_struct *vma)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	unsigned long pgoff = PAGE_ALIGN(sizeof(*array)) >> PAGE_SHIFT;
+
+	if (!(map->map_flags & BPF_F_MMAPABLE))
+		return -EINVAL;
+
+	if (vma->vm_flags & VM_WRITE) {
+		if (map->map_flags & BPF_F_RDONLY)
+			return -EPERM;
+	}
+
+	if (vma->vm_pgoff * PAGE_SIZE + (vma->vm_end - vma->vm_start) >
+	    PAGE_ALIGN((u64)array->map.max_entries * array->elem_size))
+		return -EINVAL;
+
+	return remap_vmalloc_range(vma, array, vma->vm_pgoff + pgoff);
 }
 
 static const struct bpf_map_ops array_ops = {
@@ -307,6 +355,7 @@ static const struct bpf_map_ops array_ops = {
 	.map_lookup_elem = array_map_lookup_elem,
 	.map_update_elem = array_map_update_elem,
 	.map_delete_elem = array_map_delete_elem,
+	.map_mmap = array_map_mmap,
 };
 
 static struct bpf_map_type_list array_type __read_mostly = {

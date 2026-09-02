@@ -412,6 +412,7 @@ static u32 aarch64_insn_encode_register(enum aarch64_insn_register_type type,
 		shift = 10;
 		break;
 	case AARCH64_INSN_REGTYPE_RM:
+	case AARCH64_INSN_REGTYPE_RS:
 		shift = 16;
 		break;
 	default:
@@ -679,6 +680,39 @@ u32 aarch64_insn_gen_load_store_pair(enum aarch64_insn_register reg1,
 
 	return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_7, insn,
 					     offset >> shift);
+}
+
+u32 aarch64_insn_gen_load_store_ex(enum aarch64_insn_register reg,
+				   enum aarch64_insn_register base,
+				   enum aarch64_insn_register state,
+				   enum aarch64_insn_size_type size,
+				   enum aarch64_insn_ldst_type type)
+{
+	u32 insn;
+
+	switch (type) {
+	case AARCH64_INSN_LDST_LOAD_EX:
+		insn = aarch64_insn_get_load_ex_value();
+		break;
+	case AARCH64_INSN_LDST_STORE_EX:
+		insn = aarch64_insn_get_store_ex_value();
+		break;
+	default:
+		pr_err("%s: unknown load/store exclusive encoding %d\n",
+		       __func__, type);
+		return AARCH64_BREAK_FAULT;
+	}
+
+	insn = aarch64_insn_encode_ldst_size(size, insn);
+	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RT, insn,
+					    reg);
+	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RN, insn,
+					    base);
+	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RT2, insn,
+					    AARCH64_INSN_REG_ZR);
+
+	return aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RS, insn,
+					    state);
 }
 
 u32 aarch64_insn_gen_add_sub_imm(enum aarch64_insn_register dst,

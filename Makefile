@@ -629,15 +629,26 @@ endif # $(dot-config)
 all: vmlinux
 
 ifeq ($(cc-name),clang)
-ifneq ($(CROSS_COMPILE),)
 CLANG_TRIPLE	?= $(CROSS_COMPILE)
+ifeq ($(CLANG_TRIPLE),)
+ifeq ($(ARCH),arm64)
+CLANG_TRIPLE	:= aarch64-linux-gnu-
+else ifeq ($(ARCH),arm)
+CLANG_TRIPLE	:= arm-linux-gnu-
+endif
+endif
+ifneq ($(CLANG_TRIPLE),)
 CLANG_TARGET	:= --target=$(notdir $(CLANG_TRIPLE:%-=%))
 ifeq ($(shell $(srctree)/scripts/clang-android.sh $(CC) $(CLANG_TARGET)), y)
 $(error "Clang with Android --target detected. Did you specify CLANG_TRIPLE?")
 endif
-GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
+ifneq ($(CROSS_COMPILE),)
+GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit 2>/dev/null))
+ifneq ($(GCC_TOOLCHAIN_DIR),)
 CLANG_PREFIX	:= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
 GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
+endif
+endif
 endif
 ifneq ($(GCC_TOOLCHAIN),)
 CLANG_GCC_TC	:= --gcc-toolchain=$(GCC_TOOLCHAIN)

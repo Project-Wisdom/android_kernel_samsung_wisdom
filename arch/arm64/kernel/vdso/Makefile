@@ -13,7 +13,8 @@ obj-vdso := $(addprefix $(obj)/, $(obj-vdso))
 
 ldflags-y := -shared -nostdlib -soname=linux-vdso.so.1 \
 		$(call ld-option, --hash-style=sysv) -n -T
-ccflags-y += -DDISABLE_BRANCH_PROFILING -ffixed-x18 -fno-stack-protector
+ccflags-y += -DDISABLE_BRANCH_PROFILING -ffixed-x18 -fno-stack-protector $(CLANG_TARGET)
+aflags-y += $(CLANG_TARGET)
 
 # Disable gcov profiling for VDSO code
 GCOV_PROFILE := n

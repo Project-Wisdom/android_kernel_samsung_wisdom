@@ -4,6 +4,10 @@
 /*
  * how to get the current stack pointer from C
  */
-register unsigned long current_stack_pointer asm ("sp");
+#define current_stack_pointer ({ \
+	unsigned long current_sp; \
+	asm ("mov %0, sp" : "=r" (current_sp)); \
+	current_sp; \
+})
 
 #endif /* __ASM_STACK_POINTER_H */

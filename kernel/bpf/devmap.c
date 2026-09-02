@@ -230,7 +230,12 @@ static struct bpf_map *dev_map_hash_alloc(union bpf_attr *attr)
 	dtab->map.key_size = attr->key_size;
 	dtab->map.value_size = attr->value_size;
 	dtab->map.max_entries = attr->max_entries;
-	dtab->map.map_flags = attr->map_flags;
+	/*
+	 * Device maps are read-only to BPF programs.  Upstream devmap sets this
+	 * bit internally, and Android's netbpfload validates it through
+	 * BPF_OBJ_GET_INFO_BY_FD after creating the map.
+	 */
+	dtab->map.map_flags = attr->map_flags | BPF_F_RDONLY_PROG;
 
 	dtab->n_buckets = roundup_pow_of_two(attr->max_entries);
 	if (!dtab->n_buckets) {

@@ -297,7 +297,11 @@ static int map_create(union bpf_attr *attr)
 	atomic_set(&map->refcnt, 1);
 	atomic_set(&map->usercnt, 1);
 
-	if (attr->btf_key_type_id || attr->btf_value_type_id || attr->btf_fd) {
+	/* A loaded BTF fd without map key/value type IDs is valid.  In
+	 * particular, libbpf supplies the object's BTF fd for ring buffers,
+	 * whose BTF map definition intentionally has no key or value type.
+	 */
+	if (attr->btf_key_type_id || attr->btf_value_type_id) {
 		struct btf *btf;
 
 		if (!attr->btf_key_type_id || !attr->btf_value_type_id) {

@@ -18,10 +18,12 @@
 #include <linux/file.h>
 #include <linux/fdtable.h>
 #include <linux/bitops.h>
+#include <linux/bitmap.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
+#include <uapi/linux/close_range.h>
 
 int sysctl_nr_open __read_mostly = 1024*1024;
 int sysctl_nr_open_min = BITS_PER_LONG;
@@ -989,3 +991,103 @@ int iterate_fd(struct files_struct *files, unsigned n,
 	return res;
 }
 EXPORT_SYMBOL(iterate_fd);
+
+static void close_range_cloexec(struct files_struct *files,
+				unsigned int first, unsigned int last)
+{
+	struct fdtable *fdt;
+
+	spin_lock(&files->file_lock);
+	fdt = files_fdtable(files);
+	if (first < fdt->max_fds) {
+		last = min(last, fdt->max_fds - 1);
+		bitmap_set(fdt->close_on_exec, first, last - first + 1);
+	}
+	spin_unlock(&files->file_lock);
+}
+
+static void close_range_close(struct files_struct *files,
+			      unsigned int first, unsigned int last)
+{
+	struct fdtable *fdt;
+	unsigned int cur_max;
+
+	spin_lock(&files->file_lock);
+	fdt = files_fdtable(files);
+	cur_max = fdt->max_fds;
+	if (first >= cur_max) {
+		spin_unlock(&files->file_lock);
+		return;
+	}
+	last = min(last, cur_max - 1);
+
+	while (first <= last) {
+		struct file *file;
+		unsigned int cur;
+
+		fdt = files_fdtable(files);
+		if (first >= fdt->max_fds)
+			break;
+
+		cur = min(last, fdt->max_fds - 1);
+		first = find_next_bit(fdt->open_fds, cur + 1, first);
+		if (first > cur)
+			break;
+
+		file = fdt->fd[first];
+		if (file) {
+			rcu_assign_pointer(fdt->fd[first], NULL);
+			__clear_close_on_exec(first, fdt);
+			__put_unused_fd(files, first);
+			spin_unlock(&files->file_lock);
+			filp_close(file, files);
+			cond_resched();
+			spin_lock(&files->file_lock);
+		} else if (need_resched()) {
+			spin_unlock(&files->file_lock);
+			cond_resched();
+			spin_lock(&files->file_lock);
+		}
+		first++;
+	}
+	spin_unlock(&files->file_lock);
+}
+
+/**
+ * sys_close_range() - Close all file descriptors in a given range.
+ *
+ * @fd:     starting file descriptor to close
+ * @max_fd: last file descriptor to close
+ * @flags:  CLOSE_RANGE flags.
+ *
+ * This closes a range of file descriptors. All file descriptors
+ * from @fd up to and including @max_fd are closed.
+ */
+SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
+		unsigned int, flags)
+{
+	struct files_struct *displaced = NULL;
+	int ret = 0;
+
+	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+		return -EINVAL;
+
+	if (fd > max_fd)
+		return -EINVAL;
+
+	if (flags & CLOSE_RANGE_UNSHARE) {
+		ret = unshare_files(&displaced);
+		if (ret)
+			return ret;
+	}
+
+	if (flags & CLOSE_RANGE_CLOEXEC)
+		close_range_cloexec(current->files, fd, max_fd);
+	else
+		close_range_close(current->files, fd, max_fd);
+
+	if (displaced)
+		put_files_struct(displaced);
+
+	return 0;
+}

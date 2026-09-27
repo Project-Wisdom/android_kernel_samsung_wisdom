@@ -14,6 +14,7 @@
 #include <linux/kallsyms.h>
 #include <linux/notifier.h>
 #include <linux/module.h>
+#include <linux/ptrace.h>
 #include <linux/random.h>
 #include <linux/ftrace.h>
 #include <linux/reboot.h>
@@ -131,6 +132,8 @@ void panic(const char *fmt, ...)
 
 	ecd_printf("Kernel Panic - not syncing: %s\n", buf);
 	pr_auto(ASL5, "Kernel panic - not syncing: %s\n", buf);
+	if (current->pid == 1)
+		show_regs(current_pt_regs());
 
 	exynos_ss_prepare_panic();
 	exynos_ss_dump_panic(buf, (size_t)strnlen(buf, sizeof(buf)));

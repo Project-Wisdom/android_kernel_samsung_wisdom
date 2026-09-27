@@ -887,11 +887,12 @@ int security_bounded_transition(u32 old_sid, u32 new_sid)
 	 * Android mounts /data with nosuid.  The normal bounded-transition
 	 * check consequently rejects init's intentional transition into the
 	 * dynamically-added KernelSU domain before ksud can start.  KernelSU's
-	 * policy grants that domain explicitly; allow this one target here.
+	 * policy grants that domain explicitly; strictly allow this transition
+	 * only from init into ksu.
 	 */
-	if (new_context->type &&
-	    !strcmp(sym_name(&policydb, SYM_TYPES, new_context->type - 1),
-	            "ksu")) {
+	if (old_context->type && new_context->type &&
+	    !strcmp(sym_name(&policydb, SYM_TYPES, old_context->type - 1), "init") &&
+	    !strcmp(sym_name(&policydb, SYM_TYPES, new_context->type - 1), "ksu")) {
 		rc = 0;
 		goto out;
 	}

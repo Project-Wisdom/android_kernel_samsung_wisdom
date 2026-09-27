@@ -21,11 +21,6 @@
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern bool ksu_vfs_read_hook __read_mostly;
-extern void ksu_handle_sys_read(unsigned int fd);
-#endif
-
 const struct file_operations generic_ro_fops = {
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
@@ -568,11 +563,6 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
 	struct fd f = fdget_pos(fd);
 	ssize_t ret = -EBADF;
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	if (unlikely(ksu_vfs_read_hook))
-		ksu_handle_sys_read(fd);
-#endif
 
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);

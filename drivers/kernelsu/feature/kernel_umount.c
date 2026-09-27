@@ -1,28 +1,4 @@
-#include <linux/sched.h>
-#include <linux/slab.h>
-#include <linux/task_work.h>
-#include <linux/cred.h>
-#include <linux/fs.h>
-#include <linux/mount.h>
-#include <linux/namei.h>
-#include <linux/nsproxy.h>
-#include <linux/path.h>
-#include <linux/printk.h>
-#include <linux/types.h>
-#ifndef KSU_HAS_PATH_UMOUNT
-#include <linux/syscalls.h>
-#endif
-
-#include "kernel_umount.h"
-#include "klog.h" // IWYU pragma: keep
-#include "policy/allowlist.h"
-#include "selinux/selinux.h"
-#include "policy/feature.h"
-#include "runtime/ksud_boot.h"
-#include "ksu.h"
-#include "compat/kernel_compat.h"
-
-static bool ksu_kernel_umount_enabled = true;
+static bool ksu_kernel_umount_enabled __read_mostly = true;
 
 static int kernel_umount_feature_get(u64 *value)
 {
@@ -45,41 +21,42 @@ static const struct ksu_feature_handler kernel_umount_handler = {
 	.set_handler = kernel_umount_feature_set,
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0) ||                           \
-	defined(KSU_HAS_PATH_UMOUNT)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 extern int path_umount(struct path *path, int flags);
-static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
+
+static inline void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
 {
 	int err = path_umount(path, flags);
-	if (err) {
+	if (err)
 		pr_info("umount %s failed: %d\n", mnt, err);
-	}
 }
-#else
-static void ksu_sys_umount(const char *mnt, int flags)
+#else /* we play 'guess if backported' */
+static __nocfi inline void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
 {
-	char __user *usermnt = (char __user *)mnt;
-	mm_segment_t old_fs;
+	extern int path_umount(struct path *path, int flags) __weak;
+	int err;
+#ifdef MODULE
+	assume(!path_umount);
+#endif
+	if (!path_umount)
+		goto syscall;
 
-	old_fs = get_fs();
+	err = path_umount(path, flags);
+	goto out;
+
+syscall:;
+	mm_segment_t old_fs = get_fs();
 	set_fs(KERNEL_DS);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
-	ksys_umount(usermnt, flags);
-#else
-	sys_umount(usermnt, flags); // cuz asmlinkage long sys##name
-#endif
+	err = (int)ksyscall(umount, (const char __user *)mnt, flags);
 	set_fs(old_fs);
+	path_put(path);  // release caller's ref
+out:
+	if (err)
+		pr_info("umount %s failed: %d\n", mnt, err);
 }
-
-#define ksu_umount_mnt(mnt, __unused, flags)                                   \
-	({                                                                     \
-		path_put(__unused);                                            \
-		ksu_sys_umount(mnt, flags);                                    \
-	})
-
 #endif
 
-static void try_umount(const char *mnt, int flags)
+static inline void try_umount(const char *mnt, int flags)
 {
 	struct path path;
 	int err = kern_path(mnt, 0, &path);
@@ -92,86 +69,62 @@ static void try_umount(const char *mnt, int flags)
 		path_put(&path);
 		return;
 	}
-    ksu_umount_mnt(mnt, &path, flags);
+
+	ksu_umount_mnt(mnt, &path, flags);
 }
 
-struct umount_tw {
-	struct callback_head cb;
-};
-
-static void umount_tw_func(struct callback_head *cb)
+static inline int ksu_handle_umount(struct cred *new, const struct cred *old)
 {
-	struct umount_tw *tw = container_of(cb, struct umount_tw, cb);
-	const struct cred *saved = override_creds(ksu_cred);
+	uid_t new_uid = ksu_get_uid_t(new->uid);
+	uid_t old_uid = ksu_get_uid_t(old->uid);
 
-    struct mount_entry *entry;
-    down_read(&mount_list_lock);
-    list_for_each_entry(entry, &mount_list, list) {
-        pr_info("%s: unmounting: %s flags: 0x%x\n", __func__, entry->umountable, entry->flags);
-        try_umount(entry->umountable, entry->flags);
-    }
-    up_read(&mount_list_lock);
-
-	revert_creds(saved);
-
-	kfree(tw);
-}
-
-int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
-{
-	struct umount_tw *tw;
+	if (!ksu_kernel_umount_enabled)
+		return 0;
 
 	// if there isn't any module mounted, just ignore it!
-	if (!ksu_module_mounted) {
+	if (!ksu_module_mounted)
 		return 0;
-	}
 
-	if (!ksu_kernel_umount_enabled) {
+	// There are 6 scenarios:
+	// 1. Normal app: zygote -> appuid
+	// 2. Isolated process forked from zygote: zygote -> isolated_process
+	// 3. App zygote forked from zygote: zygote -> appuid
+	// 4. Webview zygote forked from zygote: zygote -> webview_zygote
+	// 5. Isolated process forked from app zygote: appuid -> isolated_process (already handled by 3)
+	// 6. Isolated process forked from webview zygote (already handled by 4)
+	if (!is_appuid(new_uid) && new_uid != WEBVIEW_ZYGOTE_UID && !is_isolated_process(new_uid))
 		return 0;
-	}
 
-	if (!ksu_cred) {
+	if (!ksu_uid_should_umount(new_uid) && !is_isolated_process(new_uid))
 		return 0;
-	}
-
-    // There are 6 scenarios:
-    // 1. Normal app: zygote -> appuid
-    // 2. Isolated process forked from zygote: zygote -> isolated_process
-    // 3. App zygote forked from zygote: zygote -> appuid
-    // 4. Webview zygote forked from zygote: zygote -> WEBVIEW_ZYGOTE_UID (no need to handle, app cannot run custom code)
-    // 5. Isolated process forked from app zygote: appuid -> isolated_process (already handled by 3)
-    // 6. Isolated process forked from webview zygote (no need to handle, app cannot run custom code)
-    if (!is_appuid(new_uid) && !is_isolated_process(new_uid)) {
-        return 0;
-    }
-
-	if (!ksu_uid_should_umount(new_uid) && !is_isolated_process(new_uid)) {
-		return 0;
-	}
 
 	// check old process's selinux context, if it is not zygote, ignore it!
 	// because some su apps may setuid to untrusted_app but they are in global mount namespace
 	// when we umount for such process, that is a disaster!
 	// also handle case 4 and 5
-	bool is_zygote_child = is_zygote(current_cred());
+	bool is_zygote_child = is_zygote(old);
 	if (!is_zygote_child) {
 		pr_info("handle umount ignore non zygote child: %d\n", current->pid);
 		return 0;
 	}
+
+#ifdef CONFIG_KSU_HOSTSREDIRECT
+	set_thread_flag(TIF_KSU_UNMOUNTABLE);
+#endif
 	// umount the target mnt
 	pr_info("handle umount for uid: %d, pid: %d\n", new_uid, current->pid);
 
-	tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
-	if (!tw)
-		return 0;
+	const struct cred *saved = override_creds(ksu_cred);
 
-	tw->cb.func = umount_tw_func;
-
-	int err = task_work_add(current, &tw->cb, TWA_RESUME);
-	if (err) {
-		kfree(tw);
-		pr_warn("unmount add task_work failed\n");
+	struct mount_entry *entry;
+	down_read(&mount_list_lock);
+	list_for_each_entry (entry, &mount_list, list) {
+		pr_info("%s: unmounting: %s flags: 0x%x\n", __func__, entry->umountable, entry->flags);
+		try_umount(entry->umountable, entry->flags);
 	}
+	up_read(&mount_list_lock);
+
+	revert_creds(saved);
 
 	return 0;
 }

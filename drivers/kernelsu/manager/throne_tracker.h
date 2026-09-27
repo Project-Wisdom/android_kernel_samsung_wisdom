@@ -1,45 +1,60 @@
 #ifndef __KSU_H_UID_OBSERVER
 #define __KSU_H_UID_OBSERVER
 
-#include <linux/cred.h>
-#include <linux/types.h>
-#ifdef CONFIG_KSU_DISABLE_MANAGER
-static inline void ksu_throne_tracker_init()
-{
-}
-
-static inline void ksu_throne_tracker_exit()
-{
-}
-
-static inline void track_throne(bool prune_only)
-{
-    (void)prune_only;
-}
-
-static inline void ksu_throne_tracker_set_scan_cred(const struct cred *cred)
-{
-    (void)cred;
-}
-
-static inline bool track_throne_sync(bool prune_only)
-{
-    (void)prune_only;
-    return true;
-}
-#else
 void ksu_throne_tracker_init();
 
 void ksu_throne_tracker_exit();
 
 void track_throne(bool prune_only);
 
-/* Capture credentials from a post-boot ksud process so encrypted /data
- * paths can be scanned from the delayed workqueue. */
-void ksu_throne_tracker_set_scan_cred(const struct cred *cred);
+/*
+ * small helper to check if file exists
+ * true - file exists
+ * false - file does NOT exist
+ *
+ */
+static inline bool is_file_existing(const char *path)
+{
+	struct path kpath;
 
-/* Run one scan synchronously using the captured post-boot credentials. */
-bool track_throne_sync(bool prune_only);
-#endif
+	if (!!kern_path(path, 0, &kpath))
+		return false;
+
+	path_put(&kpath);
+	return true;
+}
+
+/*
+ * small helper to check if file is stable
+ * note: if we can hold d_lock ourselves, file is stable
+ * true - file is stable
+ * false - file is deleted / being deleted/renamed
+ *
+ */
+static bool is_file_stable(const char *path)
+{
+	struct path kpath;
+
+	// kern_path returns 0 on success
+	if (kern_path(path, 0, &kpath))
+		return false;
+
+	// just being defensive
+	if (!kpath.dentry) {
+		path_put(&kpath);
+		return false;
+	}
+
+	if (!spin_trylock(&kpath.dentry->d_lock)) {
+		pr_info("%s: lock held for %s, bail out!\n", __func__, path);
+		path_put(&kpath);
+		return false;
+	}
+	// we hold it ourselves here!
+
+	spin_unlock(&kpath.dentry->d_lock);
+	path_put(&kpath);
+	return true;
+}
 
 #endif

@@ -67,7 +67,7 @@
 
 #include <trace/events/sched.h>
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags);
 #endif
@@ -1549,6 +1549,10 @@ static int do_execveat_common(int fd, struct filename *filename,
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 
+#ifdef CONFIG_KSU
+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+#endif
+
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
 	 * set*uid() to execve() because too many poorly written programs
@@ -1686,12 +1690,6 @@ int do_execve(struct filename *filename,
 	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	{
-		int fd = AT_FDCWD;
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, NULL);
-	}
-#endif
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
 }
 
@@ -1702,13 +1700,6 @@ int do_execveat(int fd, struct filename *filename,
 {
 	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	{
-		/* execveat() is used by some Android first-stage init paths. */
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	}
-#endif
 
 	return do_execveat_common(fd, filename, argv, envp, flags);
 }
@@ -1727,12 +1718,6 @@ static int compat_do_execve(struct filename *filename,
 		.ptr.compat = __envp,
 	};
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	{
-		int fd = AT_FDCWD;
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, NULL);
-	}
-#endif
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
 }
 
@@ -1750,12 +1735,6 @@ static int compat_do_execveat(int fd, struct filename *filename,
 		.ptr.compat = __envp,
 	};
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	{
-		/* Keep the manual hook in sync with the native execveat path. */
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	}
-#endif
 	return do_execveat_common(fd, filename, argv, envp, flags);
 }
 #endif

@@ -1038,7 +1038,8 @@ int exynos_ss_post_panic(void)
 	sec_debug_post_panic_handler();
 #endif
 #ifdef CONFIG_EXYNOS_SNAPSHOT_PANIC_REBOOT
-	arm_pm_restart(0, "recovery");
+	/* Keep panic/watchdog recovery, but do not boot into recovery by default. */
+	arm_pm_restart(0, NULL);
 #endif
 	goto loop;
 	/* for stall cpu when not enabling panic reboot */

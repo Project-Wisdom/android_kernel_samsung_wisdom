@@ -321,11 +321,14 @@ no_null_term:
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0) && !defined(strscpy_pad)
 static ssize_t ksu_strscpy_pad(char *dest, const char *src, size_t count)
 {
-	if (!count)
-		return -E2BIG;
+	ssize_t written;
 
-	__builtin_memset(dest, 0, count);
-	return strscpy(dest, src, count);
+	written = strscpy(dest, src, count);
+	if (written < 0 || written == count - 1)
+		return written;
+
+	__builtin_memset(dest + written + 1, 0, count - written - 1);
+	return written;
 }
 #define strscpy_pad ksu_strscpy_pad
 #endif

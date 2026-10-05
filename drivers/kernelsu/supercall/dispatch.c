@@ -1,3 +1,7 @@
+#include <linux/atomic.h>
+
+static atomic_t services_started = ATOMIC_INIT(0);
+
 static int do_grant_root(void __user *arg)
 {
 	int ret;
@@ -73,6 +77,8 @@ static int do_report_event(void __user *arg)
 	switch (cmd.event) {
 	case EVENT_POST_FS_DATA: {
 		static bool post_fs_data_lock = false;
+		/* Allow the service stage to run once again after an emulated reboot. */
+		atomic_set(&services_started, 0);
 		if (!post_fs_data_lock) {
 			post_fs_data_lock = true;
 			pr_info("post-fs-data triggered\n");
@@ -94,6 +100,14 @@ static int do_report_event(void __user *arg)
 		pr_info("module mounted!\n");
 		on_module_mounted();
 		break;
+	}
+	case EVENT_SERVICES: {
+		if (atomic_xchg(&services_started, 1)) {
+			pr_info("services already started, skipping\n");
+			return 0;
+		}
+		pr_info("services triggered\n");
+		return 1;
 	}
 	default:
 		break;

@@ -11,8 +11,8 @@ MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 $(info -- KDIR: $(KDIR))
 $(info -- MDIR: $(MDIR))
 
-# compliant to last upstream kernel change as of 623eba3
-CFLAGS_ksu.o += -DKSU_VERSION=32651
+# UAPI v5 / EVENT_SERVICES from backslashxx/KernelSU v3.3.0-57.
+CFLAGS_ksu.o += -DKSU_VERSION=32657
 
 ifndef KSU_EXPECTED_SIZE
 KSU_EXPECTED_SIZE := 0x033b

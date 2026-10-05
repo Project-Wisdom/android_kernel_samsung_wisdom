@@ -19,7 +19,7 @@
 //////////////////////////////////////////////////////
 
 static struct avtab_node *get_avtab_node(struct policydb *db, struct avtab_key *key,
-                                         struct avtab_extended_perms *xperms);
+                                         struct avtab_extended_perms *xperms, bool create);
 
 static bool is_redundant_avtab_node(struct avtab_node *node);
 
@@ -81,9 +81,23 @@ static bool add_typeattribute(struct policydb *db, const char *type, const char 
 
 #define avtab_for_each(avtab, cur) ksu_hash_for_each(avtab.htable, avtab.nslot, cur)
 
+/* Match the serialized fields written by this tree's avtab_write_item(). */
+static size_t avtab_serialized_rule_size(const struct avtab_key *key)
+{
+	size_t size = 4 * sizeof(u16);
+
+	if (key->specified & AVTAB_XPERMS)
+		size += 2 * sizeof(u8) + sizeof(((struct avtab_extended_perms *)0)->perms.p);
+	else
+		size += sizeof(u32);
+
+	return size;
+}
+
 static struct avtab_node *get_avtab_node(struct policydb *db,
 					 struct avtab_key *key,
-					 struct avtab_extended_perms *xperms)
+					 struct avtab_extended_perms *xperms,
+					 bool create)
 {
 	struct avtab_node *node;
 
@@ -106,6 +120,9 @@ static struct avtab_node *get_avtab_node(struct policydb *db,
 		node = avtab_search_node(&db->te_avtab, key);
 	}
 
+	if (!node && !create)
+		return NULL;
+
 	if (!node) {
 		struct avtab_datum avdatum = {};
 		/*
@@ -123,15 +140,7 @@ static struct avtab_node *get_avtab_node(struct policydb *db,
 		if (!node)
 			return NULL;
 
-		int grow_size = sizeof(struct avtab_key);
-		grow_size += sizeof(struct avtab_datum);
-		if (key->specified & AVTAB_XPERMS) {
-			grow_size += sizeof(u8);
-			grow_size += sizeof(u8);
-			grow_size += sizeof(u32) *
-				     ARRAY_SIZE(avdatum.u.xperms->perms.p);
-		}
-		db->len += grow_size;
+		db->len += avtab_serialized_rule_size(key);
 	}
 
 	return node;
@@ -182,7 +191,7 @@ static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
 {
 	int i;
 	int ret;
-	int shrink_size = sizeof(struct avtab_key) + sizeof(struct avtab_datum);
+	size_t shrink_size;
 	struct avtab removed = {};
 	struct avtab_node *n;
 	struct avtab_node *prev;
@@ -197,6 +206,8 @@ static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
 			if (n != node)
 				continue;
 
+			shrink_size = avtab_serialized_rule_size(&n->key);
+
 			if (prev)
 				prev->next = n->next;
 			else
@@ -205,15 +216,15 @@ static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
 			if (db->te_avtab.nel > 0)
 				db->te_avtab.nel--;
 
-			if ((n->key.specified & AVTAB_XPERMS) && n->datum.u.xperms) {
-				shrink_size += sizeof(u8) + sizeof(u8) + sizeof(u32) * ARRAY_SIZE(n->datum.u.xperms->perms.p);
-			}
 			n->next = NULL;
 			avtab_set_slot(&removed, 0, n);
 			removed.nel = 1;
 			avtab_destroy(&removed);
 			if (db->len >= shrink_size)
 				db->len -= shrink_size;
+			else
+				pr_warn("remove_avtab_node: policy length underflow (%zu < %zu)\n",
+					db->len, shrink_size);
 			return true;
 		}
 	}
@@ -329,7 +340,7 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
 			if (!node)
 				return true;
 		} else {
-			node = get_avtab_node(db, &key, NULL);
+			node = get_avtab_node(db, &key, NULL, true);
 			if (!node)
 				return false;
 		}
@@ -408,34 +419,37 @@ static void add_xperm_rule_raw(struct policydb *db, struct type_datum *src, stru
 		int i;
 		if (xperms.specified == AVTAB_XPERMS_IOCTLDRIVER) {
 			for (i = ioctl_driver(low); i <= ioctl_driver(high); ++i) {
-				if (invert)
-					xperm_clear(i, xperms.perms.p);
-				else
-					xperm_set(i, xperms.perms.p);
+				xperm_set(i, xperms.perms.p);
 			}
 		} else {
 			for (i = ioctl_func(low); i <= ioctl_func(high); ++i) {
-				if (invert)
-					xperm_clear(i, xperms.perms.p);
-				else
-					xperm_set(i, xperms.perms.p);
+				xperm_set(i, xperms.perms.p);
 			}
 		}
 
-		node = get_avtab_node(db, &key, &xperms);
+		node = get_avtab_node(db, &key, &xperms, !invert);
 		if (!node) {
-			pr_warn("add_xperm_rule_raw cannot found node!\n");
+			if (!invert)
+				pr_warn("add_xperm_rule_raw cannot find or create node\n");
 			return;
 		}
 		datum = &node->datum;
+		if (!datum->u.xperms)
+			return;
 
-		if (datum->u.xperms == NULL) {
-			datum->u.xperms = (struct avtab_extended_perms *)(kzalloc(sizeof(xperms), GFP_ATOMIC));
-			if (!datum->u.xperms) {
-				pr_err("alloc xperms failed\n");
-				return;
+		for (i = 0; i < ARRAY_SIZE(xperms.perms.p); ++i) {
+			if (invert)
+				datum->u.xperms->perms.p[i] &= ~xperms.perms.p[i];
+			else
+				datum->u.xperms->perms.p[i] |= xperms.perms.p[i];
+		}
+
+		if (invert) {
+			for (i = 0; i < ARRAY_SIZE(datum->u.xperms->perms.p); ++i) {
+				if (datum->u.xperms->perms.p[i])
+					return;
 			}
-			memcpy(datum->u.xperms, &xperms, sizeof(xperms));
+			remove_avtab_node(db, node);
 		}
 	}
 }
@@ -520,7 +534,7 @@ static bool add_type_rule(struct policydb *db, const char *s, const char *t, con
 	key.target_class = cls->value;
 	key.specified = effect;
 
-	struct avtab_node *node = get_avtab_node(db, &key, NULL);
+	struct avtab_node *node = get_avtab_node(db, &key, NULL, true);
 	if (!node)
 		return false;
 	node->datum.u.data = def->value;

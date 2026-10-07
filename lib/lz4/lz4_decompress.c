@@ -970,7 +970,7 @@ int LZ4_decompress_fast_usingDict(const char *source, char *dest,
  ********************************/
 int lz4_decompress_unknownoutputsize(const unsigned char *src,
 	size_t src_len, unsigned char *dest, size_t *dest_len) {
-	*dest_len = LZ4_decompress_safe(src, dest,
+	int result = LZ4_decompress_safe(src, dest,
 		src_len, *dest_len);
 
 	/*
@@ -978,18 +978,23 @@ int lz4_decompress_unknownoutputsize(const unsigned char *src,
 	 * 0 for success and a negative result for error
 	 * new LZ4_decompress_safe returns
 	 * - the length of data read on success
-	 * - and also a negative result on error
-	 * meaning when result > 0, we just return 0 here
+	 * - and also a negative result on error.
+	 * The result must be kept in a signed variable and tested
+	 * directly: testing the size_t input length instead would
+	 * report success even when decoding failed, defeating the
+	 * input/output boundary checks that zram and squashfs rely on.
 	 */
-	if (src_len > 0)
-		return 0;
-	else
+	if (result < 0) {
 		return -1;
+	} else {
+		*dest_len = result;
+		return 0;
+	}
 }
 
 int lz4_decompress(const unsigned char *src, size_t *src_len,
 	unsigned char *dest, size_t actual_dest_len) {
-	*src_len = LZ4_decompress_fast(src, dest, actual_dest_len);
+	int result = LZ4_decompress_fast(src, dest, actual_dest_len);
 
 	/*
 	 * Prior lz4_decompress will return
@@ -997,12 +1002,16 @@ int lz4_decompress(const unsigned char *src, size_t *src_len,
 	 * new LZ4_decompress_fast returns
 	 * - the length of data read on success
 	 * - and also a negative result on error
-	 * meaning when result > 0, we just return 0 here
+	 * meaning when result > 0, we just return 0 here.
+	 * Keep the decode result in a signed variable so a negative
+	 * error is not lost through the size_t conversion.
 	 */
-	if (*src_len > 0)
-		return 0;
-	else
+	if (result < 0) {
 		return -1;
+	} else {
+		*src_len = result;
+		return 0;
+	}
 }
 
 #ifndef STATIC

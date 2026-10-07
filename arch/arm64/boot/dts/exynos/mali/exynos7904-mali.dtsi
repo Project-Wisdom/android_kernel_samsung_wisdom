@@ -10,8 +10,6 @@
 */
 
 &mali {
-	/* wisdom: shorten DVFS sampling window from shared 30ms default */
-	gpu_dvfs_polling_time = <16>;
 	interactive_info = <676000 95 0>;
 	gpu_dvfs_table_size = <9 7>; /*<row col>*/
 	                /* clk     min max  down mif_min  lit_min big_max */

@@ -991,8 +991,8 @@ static ssize_t set_polling_speed(struct device *dev, struct device_attribute *at
 		return -ENOENT;
 	}
 
-	if ((polling_speed < 100) || (polling_speed > 1000)) {
-		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range [100~1000] (%d)\n", __func__, polling_speed);
+	if ((polling_speed < 16) || (polling_speed > 1000)) {
+		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range [16~1000] (%d)\n", __func__, polling_speed);
 		return -ENOENT;
 	}
 

@@ -1267,7 +1267,8 @@ static int __zram_bvec_read(struct zram *zram, struct page *page, u32 index,
 	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
 	if (size == PAGE_SIZE) {
 		dst = kmap_atomic(page);
-		memcpy(dst, src, PAGE_SIZE);
+		/* Huge objects are stored as a single aligned page. */
+		copy_page(dst, src);
 		kunmap_atomic(dst);
 		ret = 0;
 	} else {

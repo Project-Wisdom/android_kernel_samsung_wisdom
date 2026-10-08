@@ -118,13 +118,21 @@
  * 			the fast path and disables lockless freelists.
  */
 
+#ifdef CONFIG_SLUB_DEBUG
+#ifdef CONFIG_SLUB_DEBUG_ON
+DEFINE_STATIC_KEY_TRUE(slub_debug_enabled);
+#else
+DEFINE_STATIC_KEY_FALSE(slub_debug_enabled);
+#endif
+#endif
+
 static inline int kmem_cache_debug(struct kmem_cache *s)
 {
 #ifdef CONFIG_SLUB_DEBUG
-	return unlikely(s->flags & SLAB_DEBUG_FLAGS);
-#else
-	return 0;
+	if (static_branch_unlikely(&slub_debug_enabled))
+		return s->flags & SLAB_DEBUG_FLAGS;
 #endif
+	return 0;
 }
 
 static inline void *fixup_red_left(struct kmem_cache *s, void *p)
@@ -1266,6 +1274,10 @@ check_slabs:
 	if (*str == ',')
 		slub_debug_slabs = str + 1;
 out:
+#ifdef CONFIG_SLUB_DEBUG
+	if (slub_debug)
+		static_branch_enable(&slub_debug_enabled);
+#endif
 	return 1;
 }
 
@@ -3482,6 +3494,17 @@ static int kmem_cache_open(struct kmem_cache *s, unsigned long flags)
 		s->flags |= __CMPXCHG_DOUBLE;
 #endif
 
+#ifdef CONFIG_SLUB_DEBUG
+	/*
+	 * If the cache ends up with any debugging flags, either passed
+	 * explicitly to kmem_cache_create() or applied from the global
+	 * slub_debug boot setting, the static key must be enabled or the
+	 * new kmem_cache_debug() check would skip debugging silently.
+	 */
+	if (s->flags & SLAB_DEBUG_FLAGS)
+		static_branch_enable(&slub_debug_enabled);
+#endif
+
 	/*
 	 * The larger the object size is, the more pages we want on the partial
 	 * list to avoid pounding the page allocator excessively.
@@ -4996,6 +5019,9 @@ static ssize_t sanity_checks_store(struct kmem_cache *s,
 	if (buf[0] == '1') {
 		s->flags &= ~__CMPXCHG_DOUBLE;
 		s->flags |= SLAB_DEBUG_FREE;
+#ifdef CONFIG_SLUB_DEBUG
+		static_branch_enable(&slub_debug_enabled);
+#endif
 	}
 	return length;
 }
@@ -5021,6 +5047,9 @@ static ssize_t trace_store(struct kmem_cache *s, const char *buf,
 	if (buf[0] == '1') {
 		s->flags &= ~__CMPXCHG_DOUBLE;
 		s->flags |= SLAB_TRACE;
+#ifdef CONFIG_SLUB_DEBUG
+		static_branch_enable(&slub_debug_enabled);
+#endif
 	}
 	return length;
 }
@@ -5041,6 +5070,9 @@ static ssize_t red_zone_store(struct kmem_cache *s,
 	if (buf[0] == '1') {
 		s->flags &= ~__CMPXCHG_DOUBLE;
 		s->flags |= SLAB_RED_ZONE;
+#ifdef CONFIG_SLUB_DEBUG
+		static_branch_enable(&slub_debug_enabled);
+#endif
 	}
 	calculate_sizes(s, -1);
 	return length;
@@ -5062,6 +5094,9 @@ static ssize_t poison_store(struct kmem_cache *s,
 	if (buf[0] == '1') {
 		s->flags &= ~__CMPXCHG_DOUBLE;
 		s->flags |= SLAB_POISON;
+#ifdef CONFIG_SLUB_DEBUG
+		static_branch_enable(&slub_debug_enabled);
+#endif
 	}
 	calculate_sizes(s, -1);
 	return length;
@@ -5083,6 +5118,9 @@ static ssize_t store_user_store(struct kmem_cache *s,
 	if (buf[0] == '1') {
 		s->flags &= ~__CMPXCHG_DOUBLE;
 		s->flags |= SLAB_STORE_USER;
+#ifdef CONFIG_SLUB_DEBUG
+		static_branch_enable(&slub_debug_enabled);
+#endif
 	}
 	calculate_sizes(s, -1);
 	return length;
@@ -5138,8 +5176,12 @@ static ssize_t failslab_store(struct kmem_cache *s, const char *buf,
 		return -EINVAL;
 
 	s->flags &= ~SLAB_FAILSLAB;
-	if (buf[0] == '1')
+	if (buf[0] == '1') {
 		s->flags |= SLAB_FAILSLAB;
+#ifdef CONFIG_SLUB_DEBUG
+		static_branch_enable(&slub_debug_enabled);
+#endif
+	}
 	return length;
 }
 SLAB_ATTR(failslab);
